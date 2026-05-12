@@ -1,0 +1,13 @@
+.env
+.env.local
+
+# Per-account state is machine-specific (credentials, SQLite, recordings, logs).
+accounts/*
+!accounts/.gitkeep
+
+recordings/
+screenshots/
+*.log
+*.db
+__pycache__/
+*.pyc

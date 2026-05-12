@@ -1,0 +1,85 @@
+{
+  "_comment": "Template copied to accounts/<username>/config.json on `cli start <username>`. Placeholders {{...}} are filled by cli.py.",
+
+  "account": {
+    "username": "{{REDDIT_USERNAME}}"
+  },
+
+  "plan": {
+    "file_path": "{{ACCOUNT_DIR}}/plan.md",
+    "start_date": null,
+    "duration_days": 14
+  },
+
+  "multilogin": {
+    "cloud_url": "https://api.multilogin.com",
+    "launcher_url": "https://launcher.mlx.yt:45001",
+    "profile_id": "{{MULTILOGIN_PROFILE_ID}}",
+    "folder_id": "{{MULTILOGIN_FOLDER_ID}}",
+    "profile_name": "{{MULTILOGIN_PROFILE_NAME}}",
+    "automation_type": "playwright",
+    "headless_mode": false,
+    "footguns": {
+      "_password_md5": "Login password MUST be MD5-hashed before sending to /user/signin.",
+      "_no_browser_close": "Playwright's browser.close() corrupts Multilogin profile cookies. Exit 'with' block naturally, then call /api/v1/profile/stop/p/{profile_id}.",
+      "_stop_is_path_style": "Stop endpoint is /api/v1/profile/stop/p/{profile_id}, NOT ?profile_id=X."
+    },
+    "redundant_state_backup": {
+      "enabled": true,
+      "fields_to_snapshot": ["day", "total_karma", "last_session_id", "last_executed_at"]
+    }
+  },
+
+  "stealth_verification": {
+    "enabled": true,
+    "url": "https://abrahamjuliot.github.io/creepjs/",
+    "min_trust_score": 60,
+    "max_lies": 5,
+    "reverify_every_n_sessions": 7
+  },
+
+  "reddit": {
+    "anchor_sub": "{{ANCHOR_SUB}}",
+    "secondary_subs": [],
+    "general_subs": ["r/AskReddit", "r/NoStupidQuestions", "r/CasualConversation", "r/mildlyinteresting"],
+    "nsfw_subs": [],
+    "_nsfw_policy": "passive only (browse + upvote) until day 15+"
+  },
+
+  "session": {
+    "min_duration_minutes": 10,
+    "max_duration_minutes": 25,
+    "timezone": "Europe/Riga",
+    "active_hour_start": 8,
+    "active_hour_end": 23
+  },
+
+  "approval": {
+    "mode": "inverted",
+    "submission_delay_minutes": 30
+  },
+
+  "scheduling": {
+    "platform_windows": "task_scheduler",
+    "platform_linux": "cron",
+    "task_name": "RedditWarmup_{{REDDIT_USERNAME}}"
+  },
+
+  "recording": {
+    "enabled": true,
+    "tool_windows": "ffmpeg",
+    "tool_linux": "ffmpeg",
+    "output_dir_windows": "{{ACCOUNT_DIR}}/recordings",
+    "output_dir_linux": "{{ACCOUNT_DIR}}/recordings",
+    "retain_days": 30
+  },
+
+  "paths": {
+    "account_dir_windows": "{{ACCOUNT_DIR}}",
+    "account_dir_linux": "{{ACCOUNT_DIR}}",
+    "log_file": "agent.log",
+    "lock_file": "lock",
+    "pause_flag": "pause",
+    "state_db": "state.db"
+  }
+}
