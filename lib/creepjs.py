@@ -36,31 +36,33 @@ class CreepJSVerdict:
 
 
 def verify(page, *, min_trust_score: int = 60, max_lies: int = 5,
-           timeout_s: int = 30) -> CreepJSVerdict:
+           timeout_s: int = 90) -> CreepJSVerdict:
     """Navigate to CreepJS, wait for results, extract score + lies.
 
     Args:
         page: Playwright sync `Page` (already connected via CDP to Multilogin profile)
         min_trust_score: pass threshold (0-100)
         max_lies: pass threshold (count)
-        timeout_s: max time to wait for results to render
+        timeout_s: max time to wait for results to render (CreepJS can take 60s+ on fresh profiles)
 
     Returns CreepJSVerdict.
     """
     page.goto(CREEPJS_URL, wait_until="domcontentloaded", timeout=60_000)
 
-    # CreepJS computes results progressively. Wait until the "Trust Score"
-    # text appears in the body, or timeout.
+    # CreepJS computes results progressively (FP IDs, then scores). Wait until
+    # we can actually extract both numbers — label presence alone isn't enough,
+    # they appear with "Computing..." placeholders early.
     deadline = time.time() + timeout_s
     text = ""
+    trust = None
+    lies = None
     while time.time() < deadline:
         text = page.evaluate("() => document.body.innerText") or ""
-        if "Trust Score" in text and re.search(r"\bLies\b", text):
+        trust = _extract_trust(text)
+        lies = _extract_lies(text)
+        if trust is not None and lies is not None and "Computing" not in text:
             break
-        time.sleep(1)
-
-    trust = _extract_trust(text)
-    lies = _extract_lies(text)
+        time.sleep(2)
 
     passed = (
         trust is not None and lies is not None

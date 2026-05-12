@@ -200,6 +200,12 @@ Never schedule exactly on the hour or :30 — round to a non-round minute (e.g. 
 
 ---
 
+## Filesystem discipline
+
+- **Always use `ls -la` (or `ls -A`) when listing account directories.** Plain `ls` hides dotfiles like `.env` and `.gitignore`. A missing `.env` blocks the entire boot sequence, so verify presence with `-la`, not by intuition.
+- Read files with absolute paths derived from `config.paths.account_dir_*`. Don't assume cwd.
+- If a required file appears missing, `ls -la` the parent directory and print the listing to the log BEFORE escalating — many "missing file" errors are actually visibility errors.
+
 ## Hard constraints
 
 - NEVER act on a different account than `--account=<username>` argument.
