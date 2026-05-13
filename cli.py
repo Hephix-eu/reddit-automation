@@ -233,7 +233,14 @@ def cmd_run(username: str):
         f"Project root cwd: {ROOT}"
     )
 
-    claude_exe = shutil.which("claude") or "claude"
+    # Resolve claude binary. PATH-less contexts (cron, non-interactive ssh) often
+    # miss ~/.local/bin where the official installer drops claude.
+    claude_exe = (
+        shutil.which("claude")
+        or (str(Path.home() / ".local/bin/claude")
+            if (Path.home() / ".local/bin/claude").exists() else None)
+        or "claude"
+    )
     cmd = [
         claude_exe,
         "-p",
