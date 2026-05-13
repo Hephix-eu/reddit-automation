@@ -41,17 +41,11 @@ def cancel(username: str) -> None:
             capture_output=True, text=True,
         )
     else:
-        # Best-effort: remove pending `at` jobs whose command mentions this username.
-        listing = subprocess.run(["atq"], capture_output=True, text=True).stdout
-        for line in listing.splitlines():
-            job_id = line.split()[0] if line.split() else None
-            if not job_id:
-                continue
-            cmd_text = subprocess.run(
-                ["at", "-c", job_id], capture_output=True, text=True
-            ).stdout
-            if username in cmd_text:
-                subprocess.run(["atrm", job_id], capture_output=True)
+        # Linux: stop the systemd transient timer + service for this account.
+        unit = task_name(username)
+        for suffix in (".timer", ".service"):
+            subprocess.run(["systemctl", "stop", f"{unit}{suffix}"], capture_output=True)
+            subprocess.run(["systemctl", "reset-failed", f"{unit}{suffix}"], capture_output=True)
 
 
 def _schedule_windows(username: str, when: datetime, cli_path: Path,
@@ -89,15 +83,34 @@ def _schedule_windows(username: str, when: datetime, cli_path: Path,
 
 def _schedule_linux(username: str, when: datetime, cli_path: Path,
                     python_exe: str) -> None:
-    # `at` accepts "HH:MM YYYY-MM-DD" via stdin
-    at_time = when.strftime("%H:%M %Y-%m-%d")
-    cmd = f"{shlex.quote(python_exe)} {shlex.quote(str(cli_path))} run {shlex.quote(username)}"
+    """Use systemd-run --on-calendar to register a one-shot transient unit.
+
+    Reason: `at` requires `atd` service + a package install. systemd-run is
+    always present on systemd-based distros (Ubuntu/Debian/RHEL/Fedora) and
+    needs no extra install. Creates two transient units: a .timer that fires
+    once at `when`, and a .service that runs `cli.py run <username>`.
+    """
+    unit = task_name(username)
+    cal = when.strftime("%Y-%m-%d %H:%M:%S")
+    cmd_str = f"{shlex.quote(python_exe)} {shlex.quote(str(cli_path))} run {shlex.quote(username)}"
+
+    # Clean up any prior incarnation of this unit (idempotent reschedule)
+    for suffix in (".timer", ".service"):
+        subprocess.run(["systemctl", "stop", f"{unit}{suffix}"], capture_output=True)
+        subprocess.run(["systemctl", "reset-failed", f"{unit}{suffix}"], capture_output=True)
+
     proc = subprocess.run(
-        ["at", at_time],
-        input=cmd,
+        [
+            "systemd-run",
+            f"--unit={unit}",
+            f"--on-calendar={cal}",
+            f"--description=Reddit warmup session for {username}",
+            "/bin/sh", "-c", cmd_str,
+        ],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"at {at_time} failed: rc={proc.returncode} stderr={proc.stderr!r}"
+            f"systemd-run --on-calendar={cal} failed: rc={proc.returncode} "
+            f"stderr={proc.stderr!r}"
         )
