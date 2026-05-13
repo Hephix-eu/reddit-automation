@@ -249,7 +249,11 @@ def cmd_run(username: str):
         "--append-system-prompt-file", str(AGENT_PROMPT),
         user_message,
     ]
-    result = subprocess.run(cmd, cwd=ROOT)
+    # IS_SANDBOX=1 acknowledges to claude that running as root on a dedicated host
+    # is intentional (otherwise --dangerously-skip-permissions is refused). Required
+    # on hephix where the agent runs as root in a Multilogin-isolated environment.
+    env = {**os.environ, "IS_SANDBOX": "1"}
+    result = subprocess.run(cmd, cwd=ROOT, env=env)
     sys.exit(result.returncode)
 
 
