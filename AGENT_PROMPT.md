@@ -73,6 +73,15 @@ If `stealth_verification.reverify_every_n_sessions` has elapsed since last check
 
 Open Multilogin profile + Playwright + start ffmpeg recording before any Reddit activity.
 
+### Humanlike browsing primitives
+
+Use `lib/browse.py` helpers for any scrolling/dwell:
+
+- `human_scroll(page, duration_s=60)` — bursts of 3-7 wheel events with varied deltas, reading pauses, ~5% reverse scrolls. Returns telemetry dict for logging.
+- `dwell(seconds_min, seconds_max)` — short randomized pause between deliberate actions.
+
+**Never write a `for _ in range(n): page.mouse.wheel(0, 800); time.sleep(1)` loop directly.** Constant deltas + constant sleeps produce a periodic scroll-velocity histogram that anti-bot can fingerprint. Always go through `human_scroll`.
+
 ### Session shape (humanlike rhythm)
 
 <!-- USER INPUT SLOT — describe your real Reddit-browsing rhythm in 5-10 lines. The agent uses this as its session script. Default below works but is generic; replace with how YOU actually browse Reddit if you want better camouflage. -->

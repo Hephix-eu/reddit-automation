@@ -123,10 +123,10 @@ def main():
                 result=f"title={title[:80]!r}",
             )
 
-            # Light scroll for telemetry
-            for _ in range(3):
-                page.mouse.wheel(0, 800)
-                time.sleep(1)
+            # Humanlike scroll via lib/browse
+            from lib.browse import human_scroll
+            tele = human_scroll(page, duration_s=20)
+            print(f"   scroll telemetry: {tele}")
 
         print(f"   playwright context exited cleanly (NO browser.close())")
 
