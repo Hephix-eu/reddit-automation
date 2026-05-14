@@ -153,6 +153,29 @@ name            human-readable label
 | 4 | Real Day 1 lurk session | `python cli.py run <user>` |
 | 5 | Multi-day observation | inspect SQLite + visit posts logged-out |
 
+## Sidecar deployment (hephix / any Linux box running Multilogin in Docker)
+
+When Multilogin runs as a Docker container in bridge mode, its dynamic CDP ports aren't reachable from the host. The agent runs in a sidecar container that **shares the network namespace** with `multilogin`:
+
+```bash
+docker build -f Dockerfile.agent -t redditagent-image .
+
+docker run --rm \
+  --network container:multilogin \
+  -v /root/reddit-automation/accounts:/app/accounts \
+  -v /root/reddit-automation/.env:/app/.env:ro \
+  -v /root/.claude:/root/.claude \
+  -e IS_SANDBOX=1 \
+  redditagent-image \
+  python3 cli.py run <username>
+```
+
+The `--network container:multilogin` flag puts the sidecar in `multilogin`'s netns, so `127.0.0.1:<random-cdp-port>` resolves directly. No port-forwarding, no `--network host` (which breaks Mimic's Xvfb via abstract Unix sockets), no host-port-range publishing (which OOMs small boxes with thousands of `docker-proxy` workers).
+
+`/root/.claude` is bind-mounted to inherit OAuth credentials. `accounts/` is bind-mounted so SQLite state persists. `.docker-skill/` is a vendored copy of the `working-with-multilogin` skill's `mlx_client.py` — Dockerfile.agent stages it at `/root/skills/user/working-with-multilogin/scripts` inside the container so `lib/multilogin.py`'s skill discovery resolves.
+
+`systemd-run` doesn't work in containers (no PID-1 systemd) — the agent falls back to Claude Code's CronCreate for self-rescheduling. A host-side cron that does `docker run` per scheduled session is the cleaner long-term shape.
+
 ## Dependencies
 
 - Python 3.12+

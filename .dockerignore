@@ -1,0 +1,10 @@
+.git
+__pycache__
+**/__pycache__
+*.pyc
+accounts/*/state.db
+accounts/*/state.db-*
+accounts/*/recordings
+accounts/*/screenshots
+tests
+.env

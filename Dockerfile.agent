@@ -1,0 +1,40 @@
+# Reddit warmup agent sidecar.
+# Shares network namespace with the multilogin container at runtime via
+#   --network container:multilogin
+# This grants the agent direct loopback access to Multilogin's CDP ports
+# without publishing them on the host (which crashed the box previously).
+
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive     PYTHONUNBUFFERED=1     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# System deps: curl/ca-certs for Claude installer, sqlite for state inspection,
+# nodejs for Claude CLI runtime, plus Playwright Chromium runtime libs.
+RUN apt-get update && apt-get install -y --no-install-recommends         curl ca-certificates git sqlite3         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2         libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3         libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2         libatspi2.0-0 fonts-liberation libgtk-3-0     && rm -rf /var/lib/apt/lists/*
+
+# Node 20 for Claude CLI.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -     && apt-get install -y --no-install-recommends nodejs     && rm -rf /var/lib/apt/lists/*
+
+# Python deps.
+RUN pip install --no-cache-dir playwright==1.48.0 requests
+
+# Chromium for Playwright (the agent uses CDP, but Playwright still needs
+# a binary registered to load the driver bundle cleanly).
+RUN playwright install chromium
+
+# Claude Code CLI (official installer drops it at /root/.local/bin/claude).
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH=/root/.local/bin:$PATH
+
+WORKDIR /app
+
+# Repo COPY (immutable layer for snappy starts). accounts/ is bind-mounted at
+# runtime so SQLite state persists on the host.
+COPY . /app/
+
+# The agent's lib/multilogin.py searches $HOME/skills/.../scripts — mirror that.
+COPY ./.docker-skill /root/skills/user/working-with-multilogin/scripts
+
+ENV IS_SANDBOX=1
+
+CMD ["python3", "cli.py", "--help"]
