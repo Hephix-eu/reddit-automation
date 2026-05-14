@@ -42,21 +42,54 @@ def cmd_start(username: str):
     os.environ["MULTILOGIN_EMAIL"] = mlx_email
     os.environ["MULTILOGIN_PASSWORD"] = mlx_password
 
+    # Load workspace-level proxy creds from root .env (gitignored).
+    # If present, all profiles route through gate.multilogin.com and we use
+    # DEFAULT_FLAGS_DESKTOP (natural geo derived from proxy IP — coherent).
+    # If absent, fall back to no-proxy + masked geo (incoherent but functional).
+    root_env = ROOT / ".env"
+    if root_env.exists():
+        for line in root_env.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
     from lib.multilogin import make_client
     import sys as _sys
-    _sys.path.insert(0, r"C:\Users\vilum\Documents\skills\user\working-with-multilogin\scripts")
+    skill_paths = [
+        r"C:\Users\vilum\Documents\skills\user\working-with-multilogin\scripts",
+        str(Path.home() / "skills/user/working-with-multilogin/scripts"),
+    ]
+    for p in skill_paths:
+        if Path(p).exists():
+            _sys.path.insert(0, p)
+            break
     from mlx_client import DEFAULT_FLAGS_DESKTOP
     mlx = make_client()
 
-    # When proxy=None, geolocation/timezone/localization can't be "natural"
-    # (those derive from proxy IP). Override to "mask" for no-proxy profiles.
-    no_proxy_flags = {
-        **DEFAULT_FLAGS_DESKTOP,
-        "proxy_masking": "disabled",
-        "geolocation_masking": "mask",
-        "localization_masking": "mask",
-        "timezone_masking": "mask",
-    }
+    proxy = None
+    if os.environ.get("MULTILOGIN_PROXY_USERNAME"):
+        proxy = {
+            "host": os.environ.get("MULTILOGIN_PROXY_HOST", "gate.multilogin.com"),
+            "port": int(os.environ.get("MULTILOGIN_PROXY_PORT", "1080")),
+            "type": os.environ.get("MULTILOGIN_PROXY_TYPE", "socks5"),
+            "username": os.environ["MULTILOGIN_PROXY_USERNAME"],
+            "password": os.environ["MULTILOGIN_PROXY_PASSWORD"],
+        }
+        # With proxy: timezone/locale derive naturally from proxy IP.
+        # Geolocation must stay "mask" — Multilogin rejects "natural" for it
+        # unless a separate geolocation block is provided (undocumented schema).
+        flags = {**DEFAULT_FLAGS_DESKTOP, "geolocation_masking": "mask"}
+        print(f"  Proxy: {proxy['host']}:{proxy['port']} ({proxy['type']}) — natural tz/locale, masked geo")
+    else:
+        # No proxy: can't use 'natural' for geo-derived flags (they fail without proxy).
+        flags = {
+            **DEFAULT_FLAGS_DESKTOP,
+            "proxy_masking": "disabled",
+            "geolocation_masking": "mask",
+            "localization_masking": "mask",
+            "timezone_masking": "mask",
+        }
+        print(f"  Proxy: none — masked geo (incoherent; OK only for local-residential testing)")
 
     # Pick folder — use the first available
     folders = mlx.folders()
@@ -66,12 +99,12 @@ def cmd_start(username: str):
     print(f"  Using folder: {folders[0]['name']} ({folder_id})")
 
     profile_name = f"reddit-{username}-desktop"
-    print(f"  Creating Multilogin profile '{profile_name}' (no proxy, desktop/Windows/Mimic)...")
+    print(f"  Creating Multilogin profile '{profile_name}' (desktop/Windows/Mimic)...")
     profile_id = mlx.create_profile(
         folder_id=folder_id,
         name=profile_name,
-        proxy=None,
-        flags=no_proxy_flags,
+        proxy=proxy,
+        flags=flags,
         os_type="windows",
     )
     print(f"  [OK] profile_id={profile_id}")

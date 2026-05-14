@@ -21,8 +21,9 @@ SKILL_SCRIPTS = Path(r"C:\Users\vilum\Documents\skills\user\working-with-multilo
 SKILL_SCRIPTS_LINUX = Path.home() / "skills/user/working-with-multilogin/scripts"
 
 for p in (SKILL_SCRIPTS, SKILL_SCRIPTS_LINUX):
-    if p.exists() and str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+    if p.exists():
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
         break
 else:
     raise RuntimeError(
