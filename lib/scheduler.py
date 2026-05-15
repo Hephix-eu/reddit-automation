@@ -1,21 +1,27 @@
-"""Scheduled-task wrappers for Windows Task Scheduler and Linux cron.
+"""Scheduling primitives. Three modes:
 
-The agent calls `schedule_next_run(username, when, python_exe, cli_path)` after
-each session. We register a one-shot task firing at `when` that invokes
-`python cli.py run <username>`.
+1. **Inside a container** (`/.dockerenv` exists) → write `accounts/<u>/next_run.json`.
+   A host-side cron (see `scripts/run-on-host.sh`) polls every 15min and runs the
+   agent if the file says it's time. The agent NEVER self-schedules from inside a
+   container. (Earlier attempts to use systemd-run failed for lack of PID-1 systemd,
+   and the agent then improvised by calling Anthropic-side CronCreate — which is
+   session-scoped, doesn't fire reliably, and bypasses our architecture.)
 
-On Linux: use `at` for one-shots or rewrite a per-account crontab line.
-We pick `at` here — fits the one-shot pattern naturally.
+2. **Bare-metal Linux** → systemd-run --on-calendar (transient timer unit).
 
-On Windows: `schtasks.exe /Create /TN <name> /SC ONCE /ST <time> /TR <cmd>`.
-We delete the previous task (if any) before creating the new one.
+3. **Windows** → schtasks.exe /SC ONCE.
+
+The agent SHOULD NOT use Anthropic CronCreate. This module is the only sanctioned
+path for scheduling.
 """
 
+import json
+import os
 import platform
 import shlex
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -23,14 +29,43 @@ def task_name(username: str) -> str:
     return f"RedditWarmup_{username}"
 
 
+def in_container() -> bool:
+    """True if running inside a Docker/Podman container."""
+    return Path("/.dockerenv").exists() or os.environ.get("RUNNING_IN_CONTAINER") == "1"
+
+
 def schedule_next_run(username: str, when: datetime, cli_path: Path,
-                      python_exe: str | None = None) -> None:
-    """Register a one-shot task for `python cli.py run <username>` at `when`."""
+                      python_exe: str | None = None,
+                      account_dir: Path | None = None,
+                      reason: str = "scheduled") -> None:
+    """Register the next agent invocation at `when`.
+
+    Inside a container → writes next_run.json (host cron handles firing).
+    Otherwise → native scheduler (systemd-run / schtasks).
+    """
     python_exe = python_exe or sys.executable
+    if in_container():
+        if account_dir is None:
+            account_dir = cli_path.parent / "accounts" / username
+        _write_next_run_marker(account_dir, when, reason)
+        return
     if platform.system() == "Windows":
         _schedule_windows(username, when, cli_path, python_exe)
     else:
         _schedule_linux(username, when, cli_path, python_exe)
+
+
+def _write_next_run_marker(account_dir: Path, when: datetime, reason: str) -> None:
+    """Durable, machine-readable next-run marker. Read by scripts/run-on-host.sh."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    marker = {
+        "next_run_utc": when.astimezone(timezone.utc).isoformat(),
+        "reason": reason,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = account_dir / "next_run.json"
+    path.write_text(json.dumps(marker, indent=2))
 
 
 def cancel(username: str) -> None:

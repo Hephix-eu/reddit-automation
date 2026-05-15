@@ -227,6 +227,17 @@ Never schedule exactly on the hour or :30 — round to a non-round minute (e.g. 
 - Read files with absolute paths derived from `config.paths.account_dir_*`. Don't assume cwd.
 - If a required file appears missing, `ls -la` the parent directory and print the listing to the log BEFORE escalating — many "missing file" errors are actually visibility errors.
 
+## Scheduling rules (read carefully)
+
+- **You MUST use `lib.scheduler.schedule_next_run(...)` and nothing else** for the next-run handoff. That function knows where you're running (container vs bare-metal vs Windows) and picks the right mechanism.
+- **NEVER call Anthropic-side `CronCreate` / `claude crons` / `/schedule`** as a fallback. Those are session-scoped, don't survive your container's exit, and bypass the host cron. If `schedule_next_run` raises, write a `Type=Error` row, log the desired next-run in your final `Type=Session` row's `Scheduled_For`, and exit. The host cron will retry within 15min and read `next_run.json`.
+- Inside a container, `schedule_next_run` writes `accounts/<user>/next_run.json`. That file is the contract with the host cron. Don't write it manually with a different shape.
+
+## Multilogin recovery rules
+
+- On `LOCK_PROFILE_ERROR` from `mlx.start()`: log `Type=Error, Action_Type=multilogin_profile_locked, consecutive_start_failures=N`, schedule next-run at +15min (cloud lock typically clears in 10-15min), exit. Do NOT immediately retry — the lock won't release while you keep poking it.
+- After 3 consecutive lock failures: escalate to +24hr next-run + write a `pending_review` snapshot. Human action needed (force-unlock in Multilogin desktop UI).
+
 ## Hard constraints
 
 - NEVER act on a different account than `--account=<username>` argument.
