@@ -18,8 +18,52 @@ REPO="${REPO:-/root/reddit-automation}"
 IMAGE="${IMAGE:-redditagent-image}"
 NETWORK="${NETWORK:-container:multilogin}"
 LOG="${LOG:-/var/log/reddit-agent.log}"
+INFRA_LOG="${INFRA_LOG:-/var/log/reddit-infra.log}"
+ENV_FILE="${ENV_FILE:-/etc/reddit-agent.env}"
+
+# Source Telegram creds if present (loaded into TELEGRAM_BOT_TOKEN/CHAT_ID)
+[[ -f "$ENV_FILE" ]] && set -a && source "$ENV_FILE" && set +a
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >>"$LOG"; }
+infra_log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >>"$INFRA_LOG"; }
+
+# Telegram alert. Throttles via a tiny per-message-key state file so we
+# don't spam the channel if the same fault repeats every 15 min.
+telegram() {
+    local key="$1"; shift
+    local msg="$*"
+    [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && return 0
+    local state="/var/run/reddit-agent-tg-${key}.last"
+    # Throttle: 4 hours between same-key alerts
+    if [[ -f "$state" ]]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$state" 2>/dev/null || echo 0) ))
+        (( age < 14400 )) && return 0
+    fi
+    touch "$state"
+    curl -s -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$msg" >/dev/null 2>&1 || true
+}
+
+# Self-heal: rebuild image if missing. Always log the recovery.
+ensure_image() {
+    docker image inspect "$IMAGE" >/dev/null 2>&1 && return 0
+    infra_log "image $IMAGE missing — auto-rebuilding"
+    telegram "image_missing" "[hephix] redditagent-image was missing — auto-rebuilding now. Will resume scheduled sessions on next cron tick."
+    if [[ ! -f "$REPO/Dockerfile.agent" ]]; then
+        infra_log "rebuild FAILED — Dockerfile.agent not found at $REPO/Dockerfile.agent"
+        telegram "rebuild_failed" "[hephix] ALERT: redditagent-image missing AND Dockerfile.agent not found at $REPO/Dockerfile.agent. Manual intervention needed."
+        return 1
+    fi
+    if (cd "$REPO" && docker build -f Dockerfile.agent -t "$IMAGE" . >>"$INFRA_LOG" 2>&1); then
+        infra_log "rebuild OK"
+        return 0
+    else
+        infra_log "rebuild FAILED — see lines above"
+        telegram "rebuild_failed" "[hephix] ALERT: redditagent-image rebuild FAILED. Check /var/log/reddit-infra.log on hephix."
+        return 1
+    fi
+}
 
 # Should we fire a run for this account right now?
 # Returns 0 (yes) if no next_run.json exists OR if its time has passed.
@@ -53,6 +97,12 @@ run_one() {
 
     if ! should_fire "$user"; then
         return 0
+    fi
+
+    # Self-heal image before firing
+    if ! ensure_image; then
+        log "$user: image rebuild failed — skipping run"
+        return 1
     fi
 
     log "$user: firing agent session"
