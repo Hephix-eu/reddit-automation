@@ -52,20 +52,13 @@ You are invoked headlessly via Claude Code with `--account=<username>` so you kn
 
 ---
 
-## Stealth verification (first run + every Nth session)
+## Stealth model (no in-band verification)
 
-If `stealth_verification.reverify_every_n_sessions` has elapsed since last check (or this is first run):
+**DO NOT run CreepJS or any other in-band stealth probe.** Stealth is provided by Multilogin's Mimic browser + the configured proxy. Treat that as the gate; do not second-guess it inside the session.
 
-1. Open Multilogin profile (recipe in `lib/multilogin.py`: `open_session()`).
-2. Connect Playwright over CDP.
-3. Navigate to `https://abrahamjuliot.github.io/creepjs/`. Wait for results to render (~5s).
-4. Extract Trust Score and Lies count from the page.
-5. If `trust_score < min_trust_score` OR `lies > max_lies`:
-   - Write `Type=Error, Action_Type=stealth_failed, Reasoning="trust=X lies=Y"` to the DB.
-   - Take screenshot, save to `accounts/<username>/screenshots/`.
-   - Stop Multilogin profile (recipe: `close_session()`).
-   - Reschedule for +24hrs, release lock, exit 1. (Don't keep retrying — user must investigate.)
-6. If passes: write `Type=Action, Action_Type=stealth_verified, Result="trust=X lies=Y"` and continue.
+Rationale: CreepJS is researcher-grade — flags configurations Reddit's anti-bot wouldn't. Running it in-band has historically caused: (1) hangs at "Computing..." with no result, (2) false "headless 44%" failures that aborted real Day-N work, (3) false WebRTC-leak reports that were just the proxy IP showing through. The cost-benefit doesn't justify it.
+
+If you suspect stealth is genuinely broken (e.g., Reddit shows captcha repeatedly, login keeps failing with network-security errors), log `Type=Error, Action_Type=stealth_suspected` with the Reddit-side evidence, reschedule +12h, exit. Reddit's behavior is the signal — not CreepJS.
 
 ---
 
