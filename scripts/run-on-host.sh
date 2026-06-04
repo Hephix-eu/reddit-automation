@@ -71,7 +71,10 @@ should_fire() {
     local marker="$REPO/accounts/$1/next_run.json"
     [[ ! -f "$marker" ]] && return 0    # never scheduled → fire (first run)
     local nxt
-    nxt=$(python3 -c "import json,datetime;d=json.load(open('$marker'));print(d.get('next_run_utc',''))" 2>/dev/null || echo "")
+    # Coerce JSON null to empty string explicitly — d.get('k','') returns None
+    # (not '') when the key exists with null value, and `print(None)` would emit
+    # the literal "None", which string-compares above any real ISO timestamp.
+    nxt=$(python3 -c "import json;d=json.load(open('$marker'));v=d.get('next_run_utc') or '';print(v)" 2>/dev/null || echo "")
     [[ -z "$nxt" ]] && return 0
     # Compare next_run_utc with now (both ISO8601 UTC). String compare works for ISO.
     local now
@@ -125,6 +128,16 @@ run_one() {
 
     if [[ -f "$REPO/accounts/$user/manual.json" ]]; then
         log "$user: manual mode — skipping automatic run"
+        return 0
+    fi
+
+    if [[ -f "$REPO/accounts/$user/pause" ]]; then
+        log "$user: paused — skipping"
+        return 0
+    fi
+
+    if [[ -f "$REPO/accounts/$user/graduated.json" ]]; then
+        log "$user: warmup_complete — skipping"
         return 0
     fi
 

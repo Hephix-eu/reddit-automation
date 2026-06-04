@@ -464,6 +464,71 @@ def _persist_state_to_mlx(account_dir: Path) -> None:
         print(f"[wrapper] save_state failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
 
 
+def _maybe_write_graduated(account_dir: Path) -> None:
+    """If SQLite shows the warmup is complete, write graduated.json so the
+    scheduler stops firing further sessions. Idempotent + best-effort.
+
+    Detection (any of these in the latest Session row, or anywhere in
+    actions_log for the StateSnapshot path):
+      - StateSnapshot with action_type='warmup_complete' (salty_crow33 path)
+      - Session.result contains 'warmup_complete=True' (salty_crow33 path)
+      - Session.reasoning matches '%warmup%complete%' / '%Warmup%complete%'
+        (swift_viper14 path: "Warmup 5-day plan complete")
+
+    Mirror the shape of banned.json (status / *_at / reasoning).
+    """
+    marker = account_dir / "graduated.json"
+    if marker.exists():
+        return
+    db_path = account_dir / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        import sqlite3 as _sqlite3
+        from datetime import datetime as _dt, timezone as _tz
+        with _sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = _sqlite3.Row
+            # Path A: explicit StateSnapshot marker written by an agent.
+            snap = conn.execute(
+                "SELECT day, executed_at, reasoning FROM actions_log "
+                "WHERE type='StateSnapshot' AND action_type='warmup_complete' "
+                "ORDER BY executed_at DESC LIMIT 1"
+            ).fetchone()
+            # Path B: latest Session row signals completion in result/reasoning.
+            sess = conn.execute(
+                "SELECT day, executed_at, result, reasoning FROM actions_log "
+                "WHERE type='Session' AND executed_at IS NOT NULL "
+                "ORDER BY executed_at DESC LIMIT 1"
+            ).fetchone()
+        reason_phrase = None
+        day = None
+        if snap is not None:
+            day = snap["day"]
+            reason_phrase = (snap["reasoning"] or "").strip().splitlines()[0][:160] if snap["reasoning"] else "warmup_complete StateSnapshot"
+        elif sess is not None:
+            result_s = (sess["result"] or "")
+            reasoning_s = (sess["reasoning"] or "")
+            hit = (
+                "warmup_complete=True" in result_s
+                or "warmup complete" in reasoning_s.lower()
+            )
+            if hit:
+                day = sess["day"]
+                first_line = (reasoning_s or result_s).strip().splitlines()[0][:160]
+                reason_phrase = first_line or "warmup_complete via Session row"
+        if reason_phrase is None:
+            return
+        payload = {
+            "status": "graduated",
+            "graduated_at": _dt.now(_tz.utc).isoformat(),
+            "reasoning": f"Day {day} warmup_complete=True — {reason_phrase}" if day else reason_phrase,
+        }
+        marker.write_text(json.dumps(payload, indent=2))
+        print(f"[wrapper] wrote graduated.json (day={day}): {reason_phrase[:80]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[wrapper] graduated.json check failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+
+
 def cmd_run(username: str, force: bool = False):
     """Invoke claude headlessly with AGENT_PROMPT.md appended as system prompt.
 
@@ -489,6 +554,14 @@ def cmd_run(username: str, force: bool = False):
 
     if (account_dir / "manual.json").exists() and not force:
         print(f"[run] {username} is in manual mode (manual.json present) — skipping automatic session.", file=sys.stderr)
+        sys.exit(0)
+
+    # Defense-in-depth for direct `cli.py run` invocations (cron is also guarded
+    # in run-on-host.sh). Silent exits — these are normal terminal states, not
+    # errors worth logging on every call.
+    if (account_dir / "pause").exists():
+        sys.exit(0)
+    if (account_dir / "graduated.json").exists():
         sys.exit(0)
 
     lock_path = account_dir / "lock"
@@ -680,6 +753,11 @@ def cmd_run(username: str, force: bool = False):
         # 3. Mirror SQLite truth to MLX profile notes (best-effort).
         # SQLite is authoritative; this just keeps the cross-machine snapshot fresh.
         _persist_state_to_mlx(account_dir)
+
+        # 4. If SQLite says warmup is complete, drop a graduated.json marker so
+        # run-on-host.sh + cli.py stop firing further sessions. Idempotent.
+        # More reliable than asking the LLM agent to write the file itself.
+        _maybe_write_graduated(account_dir)
 
     sys.exit(rc)
 

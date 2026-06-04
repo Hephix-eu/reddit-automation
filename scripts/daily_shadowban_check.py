@@ -64,10 +64,17 @@ def force_unlock(profile_id):
 def check_with_fallback(target, viewers):
     """Try check() against `target` using each viewer until one works.
     On LOCK_PROFILE_ERROR, auto-unlock and retry once with same viewer first.
+
+    Callers should pre-filter `viewers` to exclude banned + paused accounts —
+    those profiles tend to be stopped/uninstalled in MLX, so trying them just
+    produces `viewer_unavailable` noise. Defense-in-depth: we also skip them
+    here in case a caller forgets.
     """
     last_err = None
     for viewer in viewers:
         if viewer["username"] == target["username"]:
+            continue
+        if viewer.get("banned") or viewer.get("paused"):
             continue
         for attempt in range(2):
             try:
@@ -113,9 +120,16 @@ for d in (REPO / "accounts").iterdir():
     })
 
 active = [a for a in accounts if not a["paused"] and not a["banned"]]
+# Viewers must be reachable MLX profiles: banned/paused accounts often have
+# their profiles stopped or uninstalled, so trying to look at /u/<target> from
+# them yields `viewer_unavailable` rather than a real shadowban signal. This
+# was the root cause of the 2026-06-03 false viewer_unavailable runs against
+# salty_crow33 — crispygopher_9 (banned) was being attempted as a viewer.
+viewers = active
 print(f"checking {len(active)} active accounts "
       f"(skipping {sum(1 for a in accounts if a['paused'])} paused, "
-      f"{sum(1 for a in accounts if a['banned'])} already-banned)")
+      f"{sum(1 for a in accounts if a['banned'])} already-banned); "
+      f"viewer pool: {len(viewers)}")
 
 for target in accounts:
     if target["paused"]:
@@ -127,7 +141,7 @@ for target in accounts:
 
     print(f"checking {target['username']}...")
     try:
-        result, used_viewer = check_with_fallback(target, accounts)
+        result, used_viewer = check_with_fallback(target, viewers)
     except Exception as e:
         print(f"  ✗ {target['username']}: uncaught error: {type(e).__name__}: {e}")
         continue
