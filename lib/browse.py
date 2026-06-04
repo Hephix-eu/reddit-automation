@@ -72,3 +72,25 @@ def dwell(seconds_min: float = 0.4, seconds_max: float = 1.5,
     """A short randomized pause. Use between deliberate actions (clicks, navigations)."""
     r = rng or random
     time.sleep(r.uniform(seconds_min, seconds_max))
+
+
+def get_post_permalink(btn) -> tuple[str | None, str | None]:
+    """Return (target_url, subreddit) from any button inside a <shreddit-post>.
+
+    Walks up the DOM crossing shadow boundaries to find the enclosing
+    shreddit-post element and reads its permalink attribute. Works for upvote,
+    save, More options, comment-reply. Returns (None, None) if not inside a post.
+    Capture the result BEFORE clicking the button.
+    """
+    permalink = btn.evaluate("""el => {
+        let cur = el;
+        while (cur && cur.tagName?.toLowerCase() !== 'shreddit-post') {
+            cur = cur.parentElement || (cur.getRootNode() && cur.getRootNode().host);
+        }
+        return cur ? cur.getAttribute('permalink') : null;
+    }""")
+    if not permalink:
+        return None, None
+    target_url = f"https://www.reddit.com{permalink}"
+    subreddit = permalink.split('/r/')[1].split('/')[0] if '/r/' in permalink else None
+    return target_url, f"r/{subreddit}" if subreddit else None

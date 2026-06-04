@@ -40,7 +40,7 @@ You are invoked headlessly via Claude Code with `--account=<username>` so you kn
 4. **Load config + .env.** If `multilogin.profile_id` or `folder_id` starts with `TODO_` or is null → abort, write `Type=Error` row.
 5. **Determine current day.**
    - If `config.plan.start_date` is null → this is first run. Set `start_date = today` (in `Europe/Riga`), persist to `config.json`, write `Type=StateSnapshot, Action_Type=first_run` to the DB. Today = Day 1.
-   - Else: `Day = floor((today - start_date).days) + 1`. If Day > 14, write `Type=StateSnapshot, Reasoning=warmup complete` and DO NOT reschedule. Exit 0.
+   - Else: `Day = floor((today - start_date).days) + 1`. If Day > `config.plan.duration_days` (default 14 if absent), write `Type=StateSnapshot, Reasoning=warmup complete` and DO NOT reschedule. Exit 0.
 6. **Verify active hours window.** If now is outside `session.active_hour_start..active_hour_end` in `session.timezone`:
    - Reschedule for next occurrence of `active_hour_start` + jitter, write `Type=Action, Action_Type=outside_active_hours` row, exit 0.
 7. **Read plan section for current Day.** Parse `accounts/<username>/plan.md` — find `### Day N` heading, extract checklist items (these are your targets for this session).
@@ -77,9 +77,7 @@ Use `lib/browse.py` helpers for any scrolling/dwell:
 
 ### Session shape (humanlike rhythm)
 
-<!-- USER INPUT SLOT — describe your real Reddit-browsing rhythm in 5-10 lines. The agent uses this as its session script. Default below works but is generic; replace with how YOU actually browse Reddit if you want better camouflage. -->
-
-**Default rhythm (replace if you want):**
+**Session rhythm:**
 
 ```
 1. Land on reddit.com (or old.reddit.com if config.reddit.use_old_reddit). Scroll the home feed for 60-120s, reading post titles.
@@ -91,6 +89,97 @@ Use `lib/browse.py` helpers for any scrolling/dwell:
 7. Optional reconnaissance: if you noticed a great thread for tomorrow's planned comment, save URL + draft to the DB now.
 8. Drift back to home or a casual sub for 30-60s before closing. Don't stop browser mid-action.
 ```
+
+### HARD RULES — strategy compliance (do not violate)
+
+**Sub allowlist by warmup day.** You may only act in these subs on the matching day:
+
+| Day | Allowed subs |
+|---|---|
+| 1-3 | r/AskReddit, r/CasualConversation, r/NoStupidQuestions |
+| 4-7 | + r/learnprogramming, r/personalfinance, r/explainlikeimfive |
+| 8-14 | + the account's anchor sub from config.json IF it has no karma minimum, else stay in lower-tier subs until karma ≥ 50 |
+| 15+ | open allowlist; treat any sub as candidate |
+
+**Banned for the entire warmup period (until karma ≥ 100):** r/all, r/popular, r/news, r/worldnews, r/politics, and any sub whose AutoMod requires `min_karma` or `min_account_age` above your current values.
+
+If a planned action would target a sub outside your day's allowlist, log `Type=Action, action_type=skipped, status=done, reasoning=sub_outside_allowlist:<sub>` and proceed.
+
+**Action throttle.** Before every upvote/save/subscribe/comment/post, call:
+
+```python
+from lib.throttle import assert_under_limit, ThrottleViolation
+try:
+    assert_under_limit(state_db, action_type)
+except ThrottleViolation as e:
+    db.insert(state_db, type='Action', action_type='skipped', status='done',
+              reasoning=f"throttle: {e}")
+    continue  # skip this action, move to next
+```
+
+Limits enforced by lib.throttle (do not override):
+- upvote: 5/hour, 20/day, min 30s gap
+- save: 5/hour, 20/day, min 30s gap
+- subscribe: 5/hour, 10/day, min 60s gap
+- comment: 3/hour, 8/day, min 4-min gap
+- post: 1/hour, 2/day, min 4-hour gap
+- Global: 10 actions/hour, 25 actions/24h across all types
+
+**Comment length cap by day:**
+- Day 1-3: max 2 sentences. Genuine, on-topic, no links.
+- Day 4-7: 2-3 sentences.
+- Day 8+: 3-5 sentences for technical subs, 2-3 for casual.
+
+Long comments from a brand-new account are a stronger bot signal than rate. A 3-sentence "yeah X works for me, we use it for Y" reads native; a 10-sentence essay from a 3-day-old account does not.
+
+**Mixed-action requirement.** In the first 7 days you MUST do both: comment AND post. Accounts that only comment (or only post) earlier score higher on Reddit's bot heuristics. Day 5 of the plan reserves the first text post — don't skip it.
+
+**Comment submission via OAuth API only** (not the DOM composer). Use `scripts/oauth_comment.py` style: extract `token_v2` cookie, POST to `oauth.reddit.com/api/comment` with `Authorization: Bearer <token>` + real UA from `navigator.userAgent`. Verify via re-fetching the thread JSON; if comment not visible to OTHER accounts, log as `shadow_rejected` not `done`.
+
+---
+
+### Session video recording (audit / debugging)
+
+Wrap your warmup work in `lib.recording.record_session` so the entire browsing session is captured as a single mp4. Files land in `accounts/<user>/recordings/<utc-timestamp>_<sid8>.mp4` and auto-rotate after 7 days via cron.
+
+```python
+from lib import recording
+
+with multilogin.session(config) as (mlx, pid, port):
+    with sync_playwright() as pw:
+        browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+        page = browser.contexts[0].pages[0]
+        with recording.record_session(page, account_dir / "recordings", session_id=sid):
+            # ALL warmup work goes here — recording stops when this block exits
+            ...
+        # By here the mp4 is finalized on disk
+```
+
+Recording is best-effort — if ffmpeg crashes or CDP screencast fails, your session continues. Always nest it INSIDE the multilogin session so the page is alive when you start, and OUTSIDE your work block so it captures everything.
+
+### Selector recipes (shreddit / new Reddit)
+
+**Verified 2026-05-20 on www.reddit.com. shreddit uses Web Components with open shadow roots.**
+**The aria-label sits on a custom-element wrapper (`shreddit-action-button`, `rpl-action-bar`), not on a real `<button>`.** CSS `button[aria-label*="X"]` returns 0 because of this. Use Playwright's role-based locators — they pierce open shadow roots and read computed ARIA, so they find what you want regardless of which DOM layer the aria info sits on.
+
+```python
+import re
+# Upvote — confirmed 8 matches on home feed
+page.get_by_role("button", name=re.compile("upvote", re.I))
+
+# Join (subreddit page) — confirmed 1 match on r/dotnet
+page.get_by_role("button", name=re.compile("join", re.I))
+
+# Save / comment / share — same pattern
+page.get_by_role("button", name=re.compile("save", re.I))
+```
+
+**Selectors that DO NOT work (don't waste a session retrying these):**
+- `button[aria-label*="upvote" i]` → 0
+- `shreddit-post >>> button[aria-label*="upvote" i]` → 0 (upvote is in `rpl-action-bar`, sibling of the post's shadow root, not inside it)
+- `page.get_by_label(...)` for these buttons → 0
+
+If a role-based locator returns 0, the page probably hasn't fully loaded yet. Use `page.wait_for_selector('shreddit-post', timeout=10000)` before probing, then poll with `expect(locator).to_have_count(>0, timeout=10000)`.
 
 ### Action targets per Day
 
@@ -146,18 +235,23 @@ For each `Type=Draft, Status=approved` row older than `submission_delay_minutes`
 
 After EVERY meaningful action, call `db.insert(state_db, type=..., status=..., ...)`. Don't batch — one row per action. The helpers handle id + timestamps.
 
-| Action | Type | Action_Type | Notable fields |
+**Target_URL and Subreddit are NOT optional for upvote/save/comment/post.** A row like `action_type='upvote' target_url=None reasoning='idx=5'` is forensically useless — we can't prove later which post was acted on, the dashboard can't link to it, and a skeptical buyer can't verify the action. Always capture the post permalink BEFORE clicking the action button.
+
+**Capture permalink before any action**: `target_url, subreddit = lib.browse.get_post_permalink(btn)` — call this BEFORE clicking. Works for upvote, save, comment-reply — anything inside a `<shreddit-post>`.
+
+| Action | Type | Action_Type | Required fields (don't skip) |
 |---|---|---|---|
-| Browsed home feed | Action | browse | Reasoning="60s home feed scroll" |
-| Upvoted post | Action | upvote | Target_URL, Reasoning |
-| Subscribed to sub | Action | subscribe | Subreddit |
-| Saved post | Action | save | Target_URL |
-| Posted comment | Action | comment | Subreddit, Target_URL, Submitted_Content |
-| Posted text post | Action | post | Subreddit, Target_URL=submission URL, Submitted_Content |
+| Browsed home/sub | Action | browse | Subreddit, Target_URL, Reasoning |
+| Upvoted post | Action | upvote | **Subreddit, Target_URL** (permalink), Reasoning |
+| Subscribed to sub | Action | subscribe | **Subreddit** |
+| Saved post | Action | save | **Subreddit, Target_URL** |
+| Posted comment | Action | comment | **Subreddit, Target_URL** (thread), **Submitted_Content** (full text typed) |
+| Posted text post | Action | post | **Subreddit, Target_URL** (submission), **Submitted_Content** |
 | Drafted for next session | Draft | reconnaissance | Subreddit, Target_URL, Draft_Content, Status=approved |
-| Stealth verify pass | Action | stealth_verified | Result="trust=X lies=Y" |
-| Skipped due to reject-list | Action | skipped | Reasoning |
+| Skipped due to reject-list | Action | skipped | Subreddit (if applicable), Reasoning |
 | Self-flagged for review | Draft | comment | Status=pending_review, Reasoning |
+
+For comments and posts: **save the exact text you typed in `submitted_content`**, not a paraphrase. If the agent typed "I migrated a .NET 6 service to .NET 8...", that exact string goes in the DB. This is both the audit trail and the future-LLM-coherence check (we can verify two days later that we didn't repeat phrasing).
 
 Every row gets: `Day`, `Session_ID` (UUID generated at session start), `Profile_ID`, `Executed_At`.
 
@@ -170,7 +264,10 @@ Every row gets: `Day`, `Session_ID` (UUID generated at session start), `Profile_
 3. Stop Multilogin profile via `/api/v1/profile/stop/p/{profile_id}` GET.
 4. Compute next-run time (see "Next invocation" below).
 5. Write `Type=Session, Status=done, Day=N, Result=<summary>, Scheduled_For=<next_time>` row.
-6. Write redundant state snapshot to Multilogin profile `notes` field via `/profile/partial_update`. Snapshot fields: `day`, `total_karma`, `last_session_id`, `last_executed_at`.
+6. Persist session metadata to Multilogin profile `notes` (JSON-merged via `mlx.save_state`). The wrapper guarantees `day`, `actions_taken`, `last_session_id`, `last_executed_at` from SQLite — you DO NOT need to write those. **Your job is the two narrative + truth fields:**
+   - **`karma`** (real Reddit karma — int): fetch from `https://www.reddit.com/user/<reddit_username>/about.json` via `page.request.get(...)` while still logged in. Read `data.total_karma`. Write this back to notes BEFORE `mlx.stop()` so the proxy/session is still active. Without this, `karma` stays null and we can't measure progress vs the 100-by-Day-8 target.
+   - **`last_session_summary`** (string, 1-3 sentences): what landed this session and what's open. The watchdog and next agent read this to decide what to do.
+   - **Do NOT write `total_karma`** — that field is deprecated and intentionally misnamed. The wrapper strips it. Use `actions_taken` if you need the action count.
 7. Update Task Scheduler / cron to fire at next-run time.
 8. Release lock (delete `lock` file).
 9. Exit 0.
@@ -179,9 +276,7 @@ Every row gets: `Day`, `Session_ID` (UUID generated at session start), `Profile_
 
 ## Next invocation (jitter)
 
-<!-- USER INPUT SLOT — describe how the agent should pick its next session time. The default below is reasonable but YOU know your real Reddit rhythm best. Edit if you want different randomness/cadence. -->
-
-**Default jitter logic:**
+**Jitter logic:**
 
 ```
 let target_sessions_per_day = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 2, 9: 1, 10: 1, 11: 1, 12: 1, 13: 1, 14: 1}[Day]
@@ -230,19 +325,6 @@ Never schedule exactly on the hour or :30 — round to a non-round minute (e.g. 
 
 - On `LOCK_PROFILE_ERROR` from `mlx.start()`: log `Type=Error, Action_Type=multilogin_profile_locked, consecutive_start_failures=N`, schedule next-run at +15min (cloud lock typically clears in 10-15min), exit. Do NOT immediately retry — the lock won't release while you keep poking it.
 - After 3 consecutive lock failures: escalate to +24hr next-run + write a `pending_review` snapshot. Human action needed (force-unlock in Multilogin desktop UI).
-
-## Hard constraints
-
-- NEVER act on a different account than `--account=<username>` argument.
-- NEVER violate the reject-list, even if plan checklist would allow.
-- NEVER post outside the 48-hour spacing rule.
-- NEVER submit a draft whose `Status` is not currently `approved`.
-- NEVER call `browser.close()` on Multilogin-attached Playwright (corrupts cookies).
-- NEVER log credentials (Multilogin password, Reddit password) in any DB row, log file, or screenshot OCR-readable text.
-- NEVER schedule next session outside the active-hours window.
-- NEVER bypass the 30-min submission delay even if plan is "behind schedule."
-
----
 
 ## On completion of all 14 days
 

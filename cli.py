@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -28,30 +29,90 @@ TEMPLATE_PLAN = ROOT / "plan.md"
 AGENT_PROMPT = ROOT / "AGENT_PROMPT.md"
 
 
-def cmd_start(username: str):
-    """Bootstrap a new account: create Multilogin profile via API + account folder."""
+def _seed_reddit_cookies(mlx, folder_id: str, profile_id: str, cookies: list) -> None:
+    """Start the Multilogin profile headlessly, inject Reddit session cookies, stop it.
+
+    Follows the same CDP connect → work → exit-with-block → mlx.stop() pattern
+    as the warmup agent so Multilogin syncs the cookie state to cloud on stop.
+    """
+    import time
+    from playwright.sync_api import sync_playwright
+
+    # First profile start may return 500 CORE_DOWNLOADING_STARTED — retry once.
+    port = None
+    for attempt in (1, 2):
+        try:
+            port = mlx.start(folder_id, profile_id, automation_type="playwright", headless=True)
+            break
+        except RuntimeError as e:
+            if attempt == 1 and "CORE_DOWNLOADING" in str(e):
+                print("  [seed] Multilogin downloading core — waiting 60s…")
+                time.sleep(60)
+            else:
+                raise
+    if port is None:
+        raise RuntimeError("Multilogin profile failed to start for cookie seeding")
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            ctx = browser.contexts[0]
+            ctx.add_cookies([
+                {"name": c["name"], "value": c["value"], "domain": ".reddit.com", "path": "/"}
+                for c in cookies
+            ])
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                page.goto("https://www.reddit.com", wait_until="domcontentloaded", timeout=30_000)
+            except Exception as e:
+                print(f"  [seed] reddit.com navigation failed ({e}) — cookies still set in profile")
+        # sync_playwright().__exit__ disconnects CDP but leaves the Multilogin browser running
+    finally:
+        mlx.stop(profile_id)
+
+    print(f"  [OK] seeded {len(cookies)} Reddit session cookies into profile")
+
+
+def cmd_start(username: str, profile_id: str | None = None, auto: bool = False, anchor_sub: str | None = None):
+    """Bootstrap a new account: create Multilogin profile (or reuse one) + account folder.
+
+    If --profile-id is given (profile already created during acctfarm signup), skip
+    profile creation and wire up the existing profile directly.
+    If --auto is given, read MLX creds from MULTILOGIN_EMAIL/MULTILOGIN_PASSWORD env vars
+    and take --anchor as the anchor subreddit (non-interactive, for dashboard use).
+    """
     account_dir = ACCOUNTS_DIR / username
     if account_dir.exists():
         sys.exit(f"Account {username} already exists at {account_dir}. Use `cli.py status` to inspect.")
 
-    mlx_email = input("Multilogin email: ").strip()
-    mlx_password = input("Multilogin password: ").strip()
-    anchor_sub = input("Anchor subreddit (e.g. r/dotnet): ").strip()
+    if auto:
+        mlx_email = os.environ.get("MULTILOGIN_EMAIL", "").strip()
+        mlx_password = os.environ.get("MULTILOGIN_PASSWORD", "").strip()
+        if not mlx_email or not mlx_password:
+            sys.exit("--auto requires MULTILOGIN_EMAIL and MULTILOGIN_PASSWORD in environment")
+        if not anchor_sub:
+            sys.exit("--auto requires --anchor SUB")
+    else:
+        mlx_email = input("Multilogin email: ").strip()
+        mlx_password = input("Multilogin password: ").strip()
+        anchor_sub = input("Anchor subreddit (e.g. r/dotnet): ").strip()
 
     # Set env for the multilogin facade
     os.environ["MULTILOGIN_EMAIL"] = mlx_email
     os.environ["MULTILOGIN_PASSWORD"] = mlx_password
 
     # Load workspace-level proxy creds from root .env (gitignored).
-    # If present, all profiles route through gate.multilogin.com and we use
-    # DEFAULT_FLAGS_DESKTOP (natural geo derived from proxy IP — coherent).
-    # If absent, fall back to no-proxy + masked geo (incoherent but functional).
+    # Use direct assignment so a stale parent-process env can't shadow the proxy vars.
     root_env = ROOT / ".env"
     if root_env.exists():
         for line in root_env.read_text().splitlines():
             if "=" in line and not line.strip().startswith("#"):
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                k, v = k.strip(), v.strip()
+                if k.startswith("MULTILOGIN_PROXY_"):
+                    os.environ[k] = v  # always override proxy vars
+                else:
+                    os.environ.setdefault(k, v)
 
     from lib.multilogin import make_client
     import sys as _sys
@@ -66,48 +127,66 @@ def cmd_start(username: str):
     from mlx_client import DEFAULT_FLAGS_DESKTOP
     mlx = make_client()
 
-    proxy = None
-    if os.environ.get("MULTILOGIN_PROXY_USERNAME"):
-        proxy = {
-            "host": os.environ.get("MULTILOGIN_PROXY_HOST", "gate.multilogin.com"),
-            "port": int(os.environ.get("MULTILOGIN_PROXY_PORT", "1080")),
-            "type": os.environ.get("MULTILOGIN_PROXY_TYPE", "socks5"),
-            "username": os.environ["MULTILOGIN_PROXY_USERNAME"],
-            "password": os.environ["MULTILOGIN_PROXY_PASSWORD"],
-        }
-        # With proxy: timezone/locale derive naturally from proxy IP.
-        # Geolocation must stay "mask" — Multilogin rejects "natural" for it
-        # unless a separate geolocation block is provided (undocumented schema).
-        flags = {**DEFAULT_FLAGS_DESKTOP, "geolocation_masking": "mask"}
-        print(f"  Proxy: {proxy['host']}:{proxy['port']} ({proxy['type']}) — natural tz/locale, masked geo")
+    if profile_id:
+        # Reuse a profile already created by acctfarm signup — just look up its folder.
+        print(f"  Reusing existing Multilogin profile {profile_id}…")
+        existing = mlx.get_profile(profile_id)
+        folder_id = existing["folder_id"]
+        profile_name = existing.get("name") or ""
+        # INVARIANT: refuse to bind an MLX profile to a different username than
+        # the one in its name. This prevents the wrong_reddit_user bug seen with
+        # salty_crow33 on 2026-05-30, where a config.json was written pointing at
+        # vast_prawn's profile_id by mistake.
+        expected_name = f"reddit-{username}-desktop"
+        if profile_name and profile_name != expected_name:
+            sys.exit(
+                f"\n  REFUSING to bind: profile {profile_id[:8]} is named "
+                f"{profile_name!r} but you asked to onboard {username!r} "
+                f"(expected {expected_name!r}).\n"
+                f"  This would cause `wrong_reddit_user` aborts every session.\n"
+                f"  If you really mean to reuse this profile, rename it in the MLX UI first."
+            )
+        if not profile_name:
+            profile_name = expected_name
+        print(f"  [OK] folder_id={folder_id}  profile_name={profile_name}")
     else:
-        # No proxy: can't use 'natural' for geo-derived flags (they fail without proxy).
-        flags = {
-            **DEFAULT_FLAGS_DESKTOP,
-            "proxy_masking": "disabled",
-            "geolocation_masking": "mask",
-            "localization_masking": "mask",
-            "timezone_masking": "mask",
-        }
-        print(f"  Proxy: none — masked geo (incoherent; OK only for local-residential testing)")
+        proxy = None
+        if os.environ.get("MULTILOGIN_PROXY_USERNAME"):
+            proxy = {
+                "host": os.environ.get("MULTILOGIN_PROXY_HOST", "gate.multilogin.com"),
+                "port": int(os.environ.get("MULTILOGIN_PROXY_PORT", "1080")),
+                "type": os.environ.get("MULTILOGIN_PROXY_TYPE", "socks5"),
+                "username": os.environ["MULTILOGIN_PROXY_USERNAME"],
+                "password": os.environ["MULTILOGIN_PROXY_PASSWORD"],
+            }
+            flags = {**DEFAULT_FLAGS_DESKTOP, "geolocation_masking": "mask"}
+            print(f"  Proxy: {proxy['host']}:{proxy['port']} ({proxy['type']}) — natural tz/locale, masked geo")
+        else:
+            flags = {
+                **DEFAULT_FLAGS_DESKTOP,
+                "proxy_masking": "disabled",
+                "geolocation_masking": "mask",
+                "localization_masking": "mask",
+                "timezone_masking": "mask",
+            }
+            print(f"  Proxy: none — masked geo (incoherent; OK only for local-residential testing)")
 
-    # Pick folder — use the first available
-    folders = mlx.folders()
-    if not folders:
-        sys.exit("No Multilogin folders found. Create one in the Multilogin UI first.")
-    folder_id = folders[0]["folder_id"]
-    print(f"  Using folder: {folders[0]['name']} ({folder_id})")
+        folders = mlx.folders()
+        if not folders:
+            sys.exit("No Multilogin folders found. Create one in the Multilogin UI first.")
+        folder_id = folders[0]["folder_id"]
+        print(f"  Using folder: {folders[0]['name']} ({folder_id})")
 
-    profile_name = f"reddit-{username}-desktop"
-    print(f"  Creating Multilogin profile '{profile_name}' (desktop/Windows/Mimic)...")
-    profile_id = mlx.create_profile(
-        folder_id=folder_id,
-        name=profile_name,
-        proxy=proxy,
-        flags=flags,
-        os_type="windows",
-    )
-    print(f"  [OK] profile_id={profile_id}")
+        profile_name = f"reddit-{username}-desktop"
+        print(f"  Creating Multilogin profile '{profile_name}' (desktop/Windows/Mimic)...")
+        profile_id = mlx.create_profile(
+            folder_id=folder_id,
+            name=profile_name,
+            proxy=proxy,
+            flags=flags,
+            os_type="windows",
+        )
+        print(f"  [OK] profile_id={profile_id}")
 
     # Bootstrap folder + files
     account_dir.mkdir(parents=True)
@@ -127,10 +206,39 @@ def cmd_start(username: str):
         config_text = config_text.replace(k, v)
     (account_dir / "config.json").write_text(config_text)
 
-    (account_dir / ".env").write_text(
-        f"MULTILOGIN_EMAIL={mlx_email}\nMULTILOGIN_PASSWORD={mlx_password}\n"
-    )
+    env_lines = [
+        f"MULTILOGIN_EMAIL={mlx_email}",
+        f"MULTILOGIN_PASSWORD={mlx_password}",
+    ]
+    if auto:
+        reddit_email    = os.environ.get("REDDIT_EMAIL", "").strip()
+        reddit_password = os.environ.get("REDDIT_PASSWORD", "").strip()
+        if reddit_email:
+            env_lines.append(f"REDDIT_USERNAME={username}")
+            env_lines.append(f"REDDIT_EMAIL={reddit_email}")
+        if reddit_password:
+            env_lines.append(f"REDDIT_PASSWORD={reddit_password}")
+    (account_dir / ".env").write_text("\n".join(env_lines) + "\n")
     shutil.copy(TEMPLATE_PLAN, account_dir / "plan.md")
+
+    if auto:
+        cookies_raw = os.environ.get("REDDIT_COOKIES", "").strip()
+        if cookies_raw:
+            try:
+                cookies = json.loads(cookies_raw)
+                print("  Seeding Reddit session cookies into Multilogin profile…")
+                _seed_reddit_cookies(mlx, folder_id, profile_id, cookies)
+            except Exception as e:
+                print(f"  [warn] cookie seeding failed: {e} — agent will log in on Day 1 instead")
+
+        # Write next_run.json so the dashboard shows the account is queued and
+        # so run-on-host.sh --all can confirm it should fire on the next cron tick.
+        from datetime import datetime, timezone
+        (account_dir / "next_run.json").write_text(json.dumps({
+            "next_run_utc": datetime.now(timezone.utc).isoformat(),
+            "reason": "initial_bootstrap",
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
 
     print(f"\n[OK] Account {username} bootstrapped at {account_dir}")
     print(f"  Multilogin profile: {profile_name} ({profile_id})")
@@ -241,15 +349,135 @@ def cmd_list():
             print(f"- {d.name}")
 
 
-def cmd_run(username: str):
+def _load_env_files(*paths: Path) -> None:
+    """Load .env files into os.environ (setdefault — won't override existing)."""
+    for p in paths:
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+def _compute_state_from_db(state_db: Path):
+    """Read SQLite, derive cross-session state snapshot. Returns dict or None.
+
+    Note: `actions_taken` counts ACTIONS THIS ACCOUNT TOOK (upvotes given,
+    subscribes done). It is NOT Reddit karma — karma comes from OTHER users
+    upvoting our content. The `karma` field is set separately by the agent
+    when it queries /user/<name>/about.json during a session.
+    """
+    if not state_db.exists():
+        return None
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(state_db))
+        conn.row_factory = sqlite3.Row
+        latest = conn.execute(
+            "SELECT session_id, day, executed_at FROM actions_log "
+            "WHERE type='Session' AND executed_at IS NOT NULL "
+            "ORDER BY executed_at DESC LIMIT 1"
+        ).fetchone()
+        actions = conn.execute(
+            "SELECT COUNT(*) AS n FROM actions_log "
+            "WHERE type='Action' AND status='done' "
+            "AND action_type IN ('upvote','subscribe','comment','post','save')"
+        ).fetchone()
+        conn.close()
+        if not latest:
+            return None
+        return {
+            "day": latest["day"],
+            "actions_taken": actions["n"] if actions else 0,
+            "last_session_id": latest["session_id"],
+            "last_executed_at": latest["executed_at"],
+        }
+    except Exception:
+        return None
+
+
+def _persist_state_to_mlx(account_dir: Path) -> None:
+    """Read SQLite truth, write to MLX profile notes. Best-effort — never raises.
+
+    Writes only fields the wrapper owns (day, actions_taken, last_session_id,
+    last_executed_at). Preserves anything else the agent wrote (karma,
+    last_session_summary, bind metadata). Drops the deprecated `total_karma`
+    field on the way through.
+    """
+    config_path = account_dir / "config.json"
+    if not config_path.exists():
+        return
+    try:
+        config = json.loads(config_path.read_text())
+        profile_id = config.get("multilogin", {}).get("profile_id", "")
+        if not profile_id or profile_id.startswith("TODO_"):
+            return
+        state_db = account_dir / config.get("paths", {}).get("state_db", "state.db")
+        state = _compute_state_from_db(state_db)
+        if state is None:
+            print("[wrapper] no SQLite Session row yet — skipping MLX persist", file=sys.stderr)
+            return
+        _load_env_files(ROOT / ".env", account_dir / ".env")
+        from lib.multilogin import make_client
+        import time as _time
+        mlx = make_client()
+        try:
+            existing = json.loads(mlx.get_profile(profile_id).get("notes") or "{}")
+        except json.JSONDecodeError:
+            existing = {}
+        existing.pop("total_karma", None)  # deprecated — was misnamed
+        merged = {
+            **existing,
+            "day": state["day"],
+            "actions_taken": state["actions_taken"],
+            "last_session_id": state["last_session_id"],
+            "last_executed_at": state["last_executed_at"],
+            "last_updated": int(_time.time()),
+        }
+        merged.setdefault("karma", None)  # agent fills when it observes Reddit-side
+        mlx.partial_update(profile_id, notes=json.dumps(merged, ensure_ascii=False))
+        sid = (state["last_session_id"] or "")[:8]
+        print(
+            f"[wrapper] save_state OK: day={state['day']} "
+            f"actions_taken={state['actions_taken']} karma={merged.get('karma')} "
+            f"session={sid}",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(f"[wrapper] save_state failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+
+
+def cmd_run(username: str, force: bool = False):
     """Invoke claude headlessly with AGENT_PROMPT.md appended as system prompt.
 
     Single autonomous session: claude reads the prompt, executes via tools
     (file ops, bash for sqlite, subprocess for Multilogin/Playwright), exits.
+
+    Wraps the claude subprocess in a finally block that always:
+      - Releases the lock if the agent left it
+      - Writes a fallback next_run.json if the agent didn't update it
+      - Enforces a hard wall-time so a hung claude doesn't pin the container
+      - Persists session state to MLX profile notes from SQLite truth
+    These are infrastructure invariants the LLM is not allowed to violate.
     """
+    from datetime import datetime, timedelta, timezone
+
     account_dir = ACCOUNTS_DIR / username
     if not account_dir.exists():
         sys.exit(f"Account {username} not found.")
+
+    if (account_dir / "banned.json").exists():
+        print(f"[run] {username} is shadowbanned (banned.json present) — skipping session.", file=sys.stderr)
+        sys.exit(0)
+
+    if (account_dir / "manual.json").exists() and not force:
+        print(f"[run] {username} is in manual mode (manual.json present) — skipping automatic session.", file=sys.stderr)
+        sys.exit(0)
+
+    lock_path = account_dir / "lock"
+    next_run_path = account_dir / "next_run.json"
+    next_run_mtime_before = next_run_path.stat().st_mtime if next_run_path.exists() else 0.0
 
     user_message = (
         f"AUTONOMOUS WARMUP SESSION for account={username}. "
@@ -286,8 +514,158 @@ def cmd_run(username: str):
     # is intentional (otherwise --dangerously-skip-permissions is refused). Required
     # on hephix where the agent runs as root in a Multilogin-isolated environment.
     env = {**os.environ, "IS_SANDBOX": "1"}
-    result = subprocess.run(cmd, cwd=ROOT, env=env)
-    sys.exit(result.returncode)
+
+    SESSION_TIMEOUT_SEC = 30 * 60
+    rc = 1
+    timed_out = False
+    session_start_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[{session_start_time}] [cli] session start: {username}", flush=True)
+
+    session_log_path = account_dir / "session.log"
+    session_log_path.write_text("")  # truncate/create before session starts
+
+    def _tee(src, log_file):
+        """Stream src bytes to log_file and to stdout simultaneously."""
+        for chunk in iter(lambda: src.read1(4096) if hasattr(src, "read1") else src.read(4096), b""):
+            log_file.write(chunk)
+            log_file.flush()
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+        src.close()
+
+    try:
+        with open(session_log_path, "wb") as _log_f:
+            proc = subprocess.Popen(
+                cmd, cwd=ROOT, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            _reader = threading.Thread(target=_tee, args=(proc.stdout, _log_f), daemon=True)
+            _reader.start()
+            try:
+                proc.wait(timeout=SESSION_TIMEOUT_SEC)
+                rc = proc.returncode
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                timed_out = True
+                rc = 124
+                print(f"\n[wrapper] claude exceeded {SESSION_TIMEOUT_SEC}s wall-time; killed.", file=sys.stderr, flush=True)
+            finally:
+                _reader.join(timeout=5)
+    except Exception as _launch_err:
+        print(f"[wrapper] failed to launch claude: {_launch_err}", file=sys.stderr, flush=True)
+    finally:
+        print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] [cli] session end: rc={rc}", flush=True)
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+                print("[wrapper] released orphan lock", file=sys.stderr)
+            except OSError as e:
+                print(f"[wrapper] could not release lock: {e}", file=sys.stderr)
+
+        running_path = account_dir / "running.json"
+        if running_path.exists():
+            try:
+                running_path.unlink()
+            except OSError:
+                pass
+
+        # Write a fallback Session row if the agent exited without writing one.
+        # This ensures every run — including crashes — appears in the dashboard.
+        db_path = account_dir / "state.db"
+        if db_path.exists():
+            try:
+                import sqlite3 as _sqlite3
+                from lib import db as _db
+                with _sqlite3.connect(str(db_path)) as _conn:
+                    _conn.row_factory = _sqlite3.Row
+                    session_written = _conn.execute(
+                        "SELECT COUNT(*) FROM actions_log WHERE type='Session' AND executed_at >= ?",
+                        (session_start_time,),
+                    ).fetchone()[0]
+                if not session_written:
+                    with _sqlite3.connect(str(db_path)) as _conn:
+                        _conn.row_factory = _sqlite3.Row
+                        recent = _conn.execute(
+                            "SELECT session_id, day FROM actions_log "
+                            "WHERE executed_at >= ? ORDER BY executed_at DESC LIMIT 1",
+                            (session_start_time,),
+                        ).fetchone()
+                        error_rows = _conn.execute(
+                            "SELECT action_type, reasoning FROM actions_log "
+                            "WHERE type='Error' AND executed_at >= ? ORDER BY executed_at",
+                            (session_start_time,),
+                        ).fetchall()
+                    sid = (recent["session_id"] if recent and recent["session_id"]
+                           else str(__import__("uuid").uuid4()))
+                    day = recent["day"] if recent else None
+                    crash_reason = "timeout" if timed_out else f"exit_{rc}"
+                    # Summarise errors: count each type and collect unique messages.
+                    from collections import Counter as _Counter
+                    type_counts = _Counter(r["action_type"] for r in error_rows if r["action_type"])
+                    error_summary = ", ".join(
+                        f"{t}(×{n})" if n > 1 else t for t, n in type_counts.most_common()
+                    )
+                    seen, unique_msgs = set(), []
+                    for r in error_rows:
+                        msg = (r["reasoning"] or "").strip()
+                        # First line is enough for de-duplication and display.
+                        key = msg.splitlines()[0][:120] if msg else ""
+                        if key and key not in seen:
+                            seen.add(key)
+                            unique_msgs.append(key)
+                    result_str = f"crashed: {crash_reason}"
+                    if error_summary:
+                        result_str += f" — {error_summary}"
+                    reasoning_str = "; ".join(unique_msgs) if unique_msgs else f"rc={rc}, no Error rows recorded"
+                    _db.insert(db_path,
+                        type="Session",
+                        status="failed",
+                        day=day,
+                        action_type="session_end",
+                        session_id=sid,
+                        result=result_str,
+                        reasoning=reasoning_str,
+                    )
+                    print(f"[wrapper] wrote fallback Session row (sid={sid[:8]}, rc={rc}): {result_str}", file=sys.stderr)
+            except Exception as _e:
+                print(f"[wrapper] could not write fallback Session row: {_e}", file=sys.stderr)
+
+        # Archive session.log to logs/session_<sid8>.log for per-session retrieval.
+        session_log = account_dir / "session.log"
+        if session_log.exists():
+            try:
+                from lib.db import latest_session
+                latest = latest_session(db_path) if db_path.exists() else None
+                sid = ((latest or {}).get("session_id") or "")[:8]
+                logs_dir = account_dir / "logs"
+                logs_dir.mkdir(exist_ok=True)
+                label = sid if sid else datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                import shutil as _shutil
+                _shutil.copy2(str(session_log), str(logs_dir / f"session_{label}.log"))
+            except Exception as _e:
+                print(f"[wrapper] could not archive session.log: {_e}", file=sys.stderr)
+
+        next_run_mtime_after = next_run_path.stat().st_mtime if next_run_path.exists() else 0.0
+        if next_run_mtime_after <= next_run_mtime_before:
+            # +2h fallback gives time to inspect the run before cron re-fires.
+            fallback_when = datetime.now(timezone.utc) + timedelta(hours=2)
+            reason = (
+                "wrapper_fallback_timeout" if timed_out
+                else f"wrapper_fallback_agent_exit_{rc}"
+            )
+            next_run_path.write_text(json.dumps({
+                "next_run_utc": fallback_when.isoformat(),
+                "reason": reason,
+                "written_at": datetime.now(timezone.utc).isoformat(),
+            }, indent=2))
+            print(f"[wrapper] agent did not update next_run.json — wrote +2h fallback ({reason})", file=sys.stderr)
+
+        # 3. Mirror SQLite truth to MLX profile notes (best-effort).
+        # SQLite is authoritative; this just keeps the cross-machine snapshot fresh.
+        _persist_state_to_mlx(account_dir)
+
+    sys.exit(rc)
 
 
 def schedule_first_run(username: str):
@@ -303,9 +681,31 @@ def schedule_first_run(username: str):
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
-    for c in ("start", "pause", "resume", "status", "stop", "run"):
+    start_sp = sub.add_parser("start")
+    start_sp.add_argument("username")
+    start_sp.add_argument(
+        "--profile-id",
+        metavar="ID",
+        default=None,
+        help="Reuse an existing Multilogin profile (created during signup) instead of creating a new one.",
+    )
+    start_sp.add_argument(
+        "--auto",
+        action="store_true",
+        help="Non-interactive: read MLX creds from MULTILOGIN_EMAIL/MULTILOGIN_PASSWORD env vars.",
+    )
+    start_sp.add_argument(
+        "--anchor",
+        metavar="SUB",
+        default=None,
+        help="Anchor subreddit (required with --auto, e.g. r/programming).",
+    )
+    for c in ("pause", "resume", "status", "stop"):
         sp = sub.add_parser(c)
         sp.add_argument("username")
+    run_sp = sub.add_parser("run")
+    run_sp.add_argument("username")
+    run_sp.add_argument("--force", action="store_true", help="Run even if manual.json is set.")
     rsp = sub.add_parser("reject")
     rsp.add_argument("draft_id", help="Draft id (or prefix, min 8 chars)")
     sub.add_parser("list")
@@ -315,6 +715,10 @@ def main():
         cmd_list()
     elif args.cmd == "reject":
         cmd_reject(args.draft_id)
+    elif args.cmd == "start":
+        cmd_start(args.username, profile_id=args.profile_id, auto=args.auto, anchor_sub=args.anchor)
+    elif args.cmd == "run":
+        cmd_run(args.username, force=getattr(args, "force", False))
     else:
         globals()[f"cmd_{args.cmd}"](args.username)
 
