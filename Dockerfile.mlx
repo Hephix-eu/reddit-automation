@@ -1,0 +1,30 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -q && \
+    apt-get install -y -q wget libayatana-appindicator3-1 xvfb curl \
+        libnss3 libnspr4 && \
+    wget -q 'https://mlxdists.s3.eu-west-3.amazonaws.com/desktop/latest/desktop-multiloginx-ubuntu-22.04-amd64.deb' \
+        -O /tmp/mlx.deb && \
+    dpkg -i /tmp/mlx.deb || true && \
+    apt-get install -f -y -q && \
+    rm /tmp/mlx.deb
+
+EXPOSE 45000/tcp 45001/tcp 45002/tcp 45003/tcp
+
+# Restart Xvfb inside the loop so a crashed display doesn't strand mlxapp forever.
+# Each iteration: clean up any stale lock/socket, start a fresh Xvfb, run mlxapp,
+# then kill Xvfb and wait 3s before trying again.
+CMD ["sh", "-c", "\
+while true; do \
+    pkill -x Xvfb 2>/dev/null; \
+    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; \
+    Xvfb :99 -screen 0 1280x800x24 & \
+    XVFB_PID=$!; \
+    sleep 1; \
+    DISPLAY=:99 mlxapp; \
+    echo \"mlxapp exited, restarting in 3s...\"; \
+    kill $XVFB_PID 2>/dev/null; \
+    sleep 3; \
+done"]

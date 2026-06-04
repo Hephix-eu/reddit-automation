@@ -83,16 +83,49 @@ run_one() {
     local user="$1"
     local lock="$REPO/accounts/$user/lock"
 
-    # Skip if currently running (lock present, recent)
+    # Skip if currently running (lock present, recent). The threshold is
+    # comfortably above any normal session length — anything older is
+    # definitely orphaned by a crashed wrapper or hung agent.
+    #
+    # Stale-lock path: don't just unlink the file. The MLX cloud-side lock
+    # and any zombie Mimic process are still around, and the next agent
+    # session will crash on profile-start (silent rc=1, no SQLite). Run
+    # force_release first to stop the browser and release the cloud lock.
     if [[ -f "$lock" ]]; then
         local lock_age
         lock_age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
-        if (( lock_age < 7200 )); then
+        if (( lock_age < 2700 )); then
             log "$user: lock present (age ${lock_age}s) — skipping"
             return 0
         fi
-        log "$user: stale lock (${lock_age}s) — removing"
+        log "$user: stale lock (${lock_age}s) — force-releasing MLX profile"
+        if ! ensure_image; then
+            log "$user: image unavailable — cannot force_release, skipping run"
+            return 1
+        fi
+        if ! docker run --rm \
+                --name "redditagent-${user}-release-$$" \
+                --network "$NETWORK" \
+                -v "$REPO/accounts:/app/accounts" \
+                -v "$REPO/.env:/app/.env:ro" \
+                "$IMAGE" \
+                python3 scripts/force_release.py "$user" >>"$LOG" 2>&1; then
+            log "$user: force_release FAILED — skipping run, will retry next cron tick"
+            telegram "force_release_${user}" "[hephix] ${user}: stale lock cleanup couldn't reach MLX API. Will retry in 15min; manual check recommended if this repeats."
+            return 1
+        fi
+        log "$user: force_release OK — removing lock file"
         rm -f "$lock"
+    fi
+
+    if [[ -f "$REPO/accounts/$user/banned.json" ]]; then
+        log "$user: shadowbanned (banned.json present) — skipping automatic run"
+        return 0
+    fi
+
+    if [[ -f "$REPO/accounts/$user/manual.json" ]]; then
+        log "$user: manual mode — skipping automatic run"
+        return 0
     fi
 
     if ! should_fire "$user"; then
