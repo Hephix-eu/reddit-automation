@@ -149,18 +149,31 @@ def cmd_start(username: str, profile_id: str | None = None, auto: bool = False, 
         if not profile_name:
             profile_name = expected_name
         print(f"  [OK] folder_id={folder_id}  profile_name={profile_name}")
+        proxy_sid = None  # SID rotation N/A — reusing existing MLX profile
     else:
         proxy = None
+        proxy_sid = None
         if os.environ.get("MULTILOGIN_PROXY_USERNAME"):
+            base_username = os.environ["MULTILOGIN_PROXY_USERNAME"]
+            # Rotate the gate.multilogin.com sticky-session ID per account so each
+            # profile gets a different exit IP. Without this, all accounts share the
+            # workspace SID -> same IP -> linkable fingerprint (2026-06-02 ban cluster).
+            if "sid-" in base_username:
+                from mlx_client import gen_sid, rotate_proxy_sid
+                proxy_sid = gen_sid()
+                proxy_username = rotate_proxy_sid(base_username, proxy_sid)
+            else:
+                proxy_username = base_username
             proxy = {
                 "host": os.environ.get("MULTILOGIN_PROXY_HOST", "gate.multilogin.com"),
                 "port": int(os.environ.get("MULTILOGIN_PROXY_PORT", "1080")),
                 "type": os.environ.get("MULTILOGIN_PROXY_TYPE", "socks5"),
-                "username": os.environ["MULTILOGIN_PROXY_USERNAME"],
+                "username": proxy_username,
                 "password": os.environ["MULTILOGIN_PROXY_PASSWORD"],
             }
             flags = {**DEFAULT_FLAGS_DESKTOP, "geolocation_masking": "mask"}
-            print(f"  Proxy: {proxy['host']}:{proxy['port']} ({proxy['type']}) — natural tz/locale, masked geo")
+            sid_label = f" sid={proxy_sid}" if proxy_sid else ""
+            print(f"  Proxy: {proxy['host']}:{proxy['port']} ({proxy['type']}){sid_label} — natural tz/locale, masked geo")
         else:
             flags = {
                 **DEFAULT_FLAGS_DESKTOP,
@@ -210,6 +223,9 @@ def cmd_start(username: str, profile_id: str | None = None, auto: bool = False, 
         f"MULTILOGIN_EMAIL={mlx_email}",
         f"MULTILOGIN_PASSWORD={mlx_password}",
     ]
+    if proxy_sid:
+        # SID is baked into the MLX profile server-side; this is for audit/visibility.
+        env_lines.append(f"MULTILOGIN_PROXY_SID={proxy_sid}")
     if auto:
         reddit_email    = os.environ.get("REDDIT_EMAIL", "").strip()
         reddit_password = os.environ.get("REDDIT_PASSWORD", "").strip()
