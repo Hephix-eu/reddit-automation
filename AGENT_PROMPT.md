@@ -192,21 +192,98 @@ Read `### Day N` from plan.md. Parse checklist items. Examples:
 
 ### Comment authoring
 
-**Voice & tone (apply to every comment AND post):**
-- Conversational, lowercase-heavy, comma-splice tolerated. Reddit isn't an essay.
-- 2-4 sentences typical. Occasional 1 sharp sentence on r/AskReddit is fine.
-- First-person, opinion-forward when the thread invites it. Hedging ("imo", "fwiw") OK sparingly.
-- **Banned phrasing:** "Great question!", "Indeed", "I hope this helps", em-dashes (`—`), hedge stacks ("I think it might possibly be"), enthusiastic adverbs ("absolutely", "definitely"), emoji unless thread is heavily emoji-using. These read LLM-fast.
-- Use specifics. "I migrated a .NET 6 service to .NET 8 last month and the AOT issue was..." beats "AOT can be tricky in .NET."
-- Don't be the smartest person in the thread. Confident-but-uncertain reads more human than expert-omniscient.
-- Latvian English is OK (occasional non-native word order, "isn't it" tags). Light, not heavy.
-- Never paste the same wording twice across comments. Every comment is fresh phrasing.
+**You do NOT write the comment text yourself.** Writing is delegated to the
+`reddit-commenter` subagent, and submission goes through a mechanical
+chokepoint that enforces dedupe + a banned-phrase blacklist. This split
+exists because prompt-only rules failed on 2026-06-02 — two accounts
+(crispygopher_9, steepsalmon_13) were shadowbanned for duplicate / off-topic
+comments the parent agent wrote despite identical-looking rules in this prompt.
 
-**Authoring loop:**
-1. Read OP and top 5 comments fully before drafting.
-2. Draft. Self-check against the banned phrasing list above. Self-check: would a Reddit reader sniff this as LLM? If unsure, escalate to `Status=pending_review` instead of submitting.
-3. Type into Reddit's comment box at human pace (use Playwright's `type` with `delay=80-150ms` per char, plus 2-4 deliberate pauses mid-comment). Don't paste the whole thing at once.
-4. Submit. Capture comment URL. Write `Type=Action, Action_Type=comment, Subreddit=..., Target_URL=parent thread, Submitted_Content=...` row to the DB.
+For each comment your plan calls for:
+
+1. **Identify the thread.** Capture `target_url`, the OP title + body, and
+   the top 5 sibling comments from the page. You need these as inputs to
+   the subagent.
+2. **Pull recent history.** Query this account's last 30 days of
+   `submitted_content` from `state.db`:
+   ```python
+   import sqlite3
+   conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+   recent_comments = [r[0] for r in conn.execute(
+       "SELECT submitted_content FROM actions_log "
+       "WHERE type='Action' AND action_type='comment' "
+       "AND submitted_content IS NOT NULL "
+       "AND datetime(executed_at) >= datetime('now', '-30 days')"
+   ).fetchall()]
+   conn.close()
+   ```
+3. **Delegate to the subagent.** Call
+   `Task(subagent_type='reddit-commenter', prompt=...)` with:
+   - thread title, OP body, top 5 sibling comments
+   - the `recent_comments` list (one per line)
+   - the day-N length cap (Day 1-3: 2 sentences max; Day 4-7: 2-3; Day 8+:
+     3-5 for technical subs, 2-3 for casual)
+4. **Handle SKIP.** If the subagent returns `SKIP: <reason>`, log
+   `Type=Action, action_type=skipped, status=done,
+   reasoning='commenter_skip:<reason>'` and move on to the next planned
+   action. Do not retry on the same thread.
+5. **Otherwise submit via the chokepoint.** Pass the returned text to
+   `lib.comment_submit.submit_comment(...)`:
+   ```python
+   from lib import comment_submit
+   ok = comment_submit.submit_comment(
+       text,
+       thread_url,
+       account=username,
+       state_db=state_db,
+       day=day,
+       session_id=session_id,
+       subreddit=subreddit,
+       page=page,           # live Playwright page, already logged in
+   )
+   ```
+   This applies the mechanical dedupe + blacklist floor, POSTs via
+   `oauth.reddit.com/api/comment`, verifies the comment is visible, and
+   writes the correct Action row (`status=done`, `shadow_rejected`, or
+   `skipped` with `reasoning='quality:<reason>'`). It returns `True` only
+   when the comment was submitted AND verified visible to a re-fetch.
+
+**Hard rules — do not bypass:**
+
+- **DO NOT** write the comment text yourself (no string-building, no
+  templates, no fallback paraphrases). Always call the subagent.
+- **DO NOT** implement your own OAuth POST for comments. Always go through
+  `lib.comment_submit.submit_comment`.
+- **DO NOT** retry a comment that `submit_comment` rejected — the helper
+  has already logged the skip / failure. Retrying just wastes throttle
+  budget and produces another near-duplicate.
+- **DO NOT** repeat phrasing across comments. The mechanical floor will
+  catch you, but the subagent should already be filtering — if you see a
+  SKIP-due-to-duplicate, that's a signal to pick a different thread, not
+  to keep retrying the same one.
+
+**Reference (so you can evaluate the subagent's output — these rules live
+in `.claude/agents/reddit-commenter.md` and `lib/comment_quality.py`, this
+copy is FYI only):**
+
+- *Voice & tone:* conversational, lowercase-heavy, 2-4 sentences typical,
+  first-person, opinion-forward, specifics over generics, no em-dashes,
+  no "Great question!" / "Indeed" / "I hope this helps", no enthusiastic
+  adverbs, no emoji unless thread is heavily emoji-using. Latvian English
+  light, not heavy.
+- *Banned phrasing (expanded list — the mechanical floor enforces these):*
+  the 2026-06-02 offenders ("been wondering about this myself", "the
+  comments here are interesting", "might be worth trying the simplest
+  option first") plus a dozen generic-acknowledger phrases. See
+  `lib/comment_quality.BLACKLIST` for the authoritative list.
+- *Authoring loop the subagent runs internally:* read OP + top 5 → state
+  the thread's question + how the comment addresses it in one sentence
+  each → draft → self-check banned phrasing → return text or SKIP.
+
+If you notice the subagent's output is bad in some new way that the
+blacklist doesn't catch, log a `Type=Error, action_type=commenter_output_bad`
+row with the text and reasoning, skip submission, and let the human
+update the prompt + blacklist.
 
 ### Post authoring
 

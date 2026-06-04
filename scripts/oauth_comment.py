@@ -12,8 +12,14 @@ Two modes:
 
   submit (after eyeball):
       python3 oauth_comment.py --user smug_pickle72 --draft-id <id> --submit
-      → reads the saved draft, POSTs via oauth.reddit.com/api/comment,
-        verifies the comment is visible, updates DB rows.
+      → reads the saved draft, delegates to lib.comment_submit.submit_comment
+        which (1) runs the mechanical quality floor (dedupe + blacklist),
+        (2) POSTs via oauth.reddit.com/api/comment, (3) verifies the comment
+        is visible, (4) writes the Action row.
+
+The OAuth POST + verify logic used to live inline here; it now lives in
+lib/comment_submit.py so that BOTH this manual script AND the autonomous
+warmup agent go through the same chokepoint with the same quality floor.
 
 Always stops the Multilogin profile cleanly.
 """
@@ -229,102 +235,37 @@ def main() -> int:
                 print(f"  python3 scripts/oauth_comment.py --user {args.user} --draft-id {draft_id[:12]} --submit")
                 return 0
 
-            # ===== Extract auth artifacts from session =====
-            ctx_cookies = browser.contexts[0].cookies()
-            token_v2 = next((c["value"] for c in ctx_cookies if c["name"] == "token_v2"), None)
-            csrf_token = next((c["value"] for c in ctx_cookies if c["name"] == "csrf_token"), None)
-            real_ua = page.evaluate("() => navigator.userAgent")
-            print(f"\n[auth] token_v2: {(token_v2 or '')[:40]}...  ({len(token_v2 or '')} chars)")
-            print(f"[auth] csrf:     {(csrf_token or '')[:40]}")
-            print(f"[auth] UA:       {real_ua[:80]}")
+            # ===== SUBMIT via the chokepoint =====
+            # All OAuth POST + verify + DB logging now lives in
+            # lib.comment_submit. This script just delegates so that the
+            # mechanical quality floor (dedupe + blacklist) always runs.
+            from lib import comment_submit
 
-            # ===== SUBMIT =====
-            print(f"\n=== SUBMITTING via oauth.reddit.com/api/comment ===")
-            submit_headers = {
-                "User-Agent": real_ua,
-                "Accept": "application/json",
-            }
-            if token_v2:
-                submit_headers["Authorization"] = f"Bearer {token_v2}"
-            sub_resp = page.request.post(
-                "https://oauth.reddit.com/api/comment",
-                form={"api_type": "json", "thing_id": thing_id, "text": text},
-                headers=submit_headers,
-                timeout=20000,
+            print(f"\n=== SUBMITTING via lib.comment_submit.submit_comment ===")
+            ok = comment_submit.submit_comment(
+                text,
+                thread_url,
+                account=args.user,
+                state_db=state_db,
+                day=day,
+                session_id=draft_id,   # tie the Action to its originating draft
+                subreddit=subreddit,
+                page=page,
             )
-            print(f"  HTTP {sub_resp.status}")
-            sub_body = sub_resp.text()
-            print(f"  body: {sub_body[:600]}")
-
-            # Did the request even reach the API? HTML body = CDN block, JSON = API saw it.
-            looks_like_json = sub_body.lstrip().startswith("{")
-            if sub_resp.status >= 400 and not looks_like_json:
-                print(f"\n[fail] CDN/proxy blocked the POST (returned HTML, not API JSON)")
-                db_update_status(state_db, draft_id, "pending_review",
-                                 result=f"submit blocked: HTTP {sub_resp.status} (HTML body)")
-                return 4
-
-            comment_url = None
-            comment_id = None
-            try:
-                sd = sub_resp.json()
-                errors = sd.get("json", {}).get("errors", [])
-                if errors:
-                    print(f"  [fail] errors: {errors}")
-                    db_update_status(state_db, draft_id, "failed",
-                                     result=f"reddit errors: {errors}")
-                    return 3
-                things = sd.get("json", {}).get("data", {}).get("things", [])
-                if things:
-                    cd = things[0].get("data", {})
-                    comment_id = cd.get("name") or cd.get("id")
-                    comment_url = "https://www.reddit.com" + (cd.get("permalink", ""))
-                    print(f"  ✅ comment_id={comment_id}")
-                    print(f"  ✅ permalink={comment_url}")
-            except Exception as e:
-                print(f"  response parse err: {e}")
-
-            # Verify by re-fetching the thread and looking for the comment
-            time.sleep(3)
-            verify_status = "unverified"
-            if comment_id:
-                vresp = page.request.get(json_url, timeout=15000)
-                if vresp.status == 200:
-                    try:
-                        vd = vresp.json()
-                        def walk(items):
-                            for it in items:
-                                d = it.get("data", {})
-                                if d.get("name") == comment_id or d.get("id") == comment_id.split("_")[-1]:
-                                    return True
-                                replies = d.get("replies")
-                                if isinstance(replies, dict) and walk(replies.get("data", {}).get("children", [])):
-                                    return True
-                            return False
-                        if walk(vd[1]["data"]["children"]):
-                            verify_status = "confirmed"
-                            print(f"  ✅ verified — comment visible in thread JSON")
-                        else:
-                            verify_status = "shadow_rejected"
-                            print(f"  ⚠ comment_id not found in thread after 3s — shadow_rejected")
-                    except Exception as e:
-                        print(f"  verify parse err: {e}")
-
-            # Update Draft → submitted, insert Action row
-            db_update_status(state_db, draft_id, "submitted",
-                             submitted_content=text,
-                             result=comment_url or "submitted but no permalink returned")
-            action_id = db_insert(
-                state_db,
-                type="Action", status=("done" if verify_status == "confirmed" else "shadow_rejected"),
-                action_type="comment",
-                day=day, subreddit=subreddit,
-                target_url=comment_url or thread_url,
-                submitted_content=text,
-                reasoning=f"oauth_api submit (verify={verify_status})",
-                session_id=draft_id,  # tie the Action to its originating draft
-            )
-            print(f"\n[db] Draft → submitted; Action {action_id[:8]}... → {verify_status}")
+            if ok:
+                db_update_status(state_db, draft_id, "submitted",
+                                 submitted_content=text,
+                                 result="submitted via lib.comment_submit")
+                print(f"\n[db] Draft → submitted (verified visible)")
+            else:
+                # comment_submit already wrote either a quality-skip,
+                # shadow_rejected, or failed Action row. Mark the draft as
+                # failed so it doesn't get re-tried.
+                db_update_status(state_db, draft_id, "failed",
+                                 submitted_content=text,
+                                 result="rejected by lib.comment_submit (see Action row for reason)")
+                print(f"\n[db] Draft → failed (see Action row for reason); aborting")
+                return 3
 
     finally:
         try:
