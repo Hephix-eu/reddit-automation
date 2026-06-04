@@ -1,0 +1,379 @@
+{
+  "slug": "14-day-plan",
+  "name": "14-day plan",
+  "description": "",
+  "goal": "100+ karma, clear new-account auto-filters",
+  "duration_days": 14,
+  "created_at": "2026-05-29T12:38:55.759403+00:00",
+  "days": [
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "10-15 min across 3-5 subs"
+        },
+        {
+          "type": "upvote",
+          "count": "3-5",
+          "note": "posts you actually read"
+        },
+        {
+          "type": "save",
+          "count": "1-2",
+          "note": ""
+        },
+        {
+          "type": "subscribe",
+          "count": "3-5",
+          "note": ""
+        },
+        {
+          "type": "restriction",
+          "count": "",
+          "note": "No posts, no comments, no DMs"
+        }
+      ],
+      "day": 1,
+      "label": "Lurk only"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "Browse 15-20 min, different time of day from Day 2",
+          "type": "browse"
+        },
+        {
+          "count": "5-8",
+          "note": "",
+          "type": "upvote"
+        },
+        {
+          "count": "2",
+          "note": "**1-2 meaningful comments** (2-3+ sentences each) in general subs",
+          "type": "comment"
+        },
+        {
+          "count": "2-3",
+          "note": "",
+          "type": "subscribe"
+        }
+      ],
+      "day": 2,
+      "label": "First comments"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "relevant subreddits",
+          "type": "browse"
+        },
+        {
+          "count": "5-8",
+          "note": "",
+          "type": "upvote"
+        },
+        {
+          "count": "",
+          "note": "Avoid controversial subreddits",
+          "type": "restriction"
+        },
+        {
+          "count": "2-3",
+          "note": "to replies on your earlier comments",
+          "type": "reply"
+        }
+      ],
+      "day": 3,
+      "label": "Build rhythm"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "20-30 min"
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "3-4",
+          "note": "substantive, across general + anchor subs"
+        },
+        {
+          "type": "reply",
+          "count": "",
+          "note": "reply to comments on your earlier posts"
+        }
+      ],
+      "day": 4,
+      "label": "Comment volume up"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": ""
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "post_text",
+          "count": "1",
+          "note": "genuine question in anchor or general sub"
+        },
+        {
+          "type": "comment",
+          "count": "2-3",
+          "note": ""
+        },
+        {
+          "type": "reply",
+          "count": "",
+          "note": "respond to every comment on your post"
+        }
+      ],
+      "day": 5,
+      "label": "First post (text, not link)"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "20-30 min"
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "3-4",
+          "note": "substantive, across general + anchor subs"
+        },
+        {
+          "type": "reply",
+          "count": "",
+          "note": "reply to comments on your earlier posts"
+        }
+      ],
+      "day": 6,
+      "label": "Comments only (respect 48hr post spacing)"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "15-20 min"
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "1-2",
+          "note": "meaningful, 2-3 sentences each"
+        },
+        {
+          "type": "subscribe",
+          "count": "2-3",
+          "note": ""
+        }
+      ],
+      "day": 7,
+      "label": "Anchor sub post (48hrs after Day 5)"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": ""
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "4-5",
+          "note": "sort by new, under 1hr old"
+        },
+        {
+          "type": "karma_push",
+          "count": "",
+          "note": "r/FreeKarma4U if still short of target"
+        }
+      ],
+      "day": 8,
+      "label": "Push past 100"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "10 min"
+        },
+        {
+          "type": "comment",
+          "count": "1-2",
+          "note": "light"
+        }
+      ],
+      "day": 9,
+      "label": "Rest Day"
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "10-15 min across 3-5 subs"
+        },
+        {
+          "type": "upvote",
+          "count": "3-5",
+          "note": "posts you actually read"
+        },
+        {
+          "type": "save",
+          "count": "1-2",
+          "note": ""
+        },
+        {
+          "type": "subscribe",
+          "count": "3-5",
+          "note": ""
+        },
+        {
+          "type": "restriction",
+          "count": "",
+          "note": "No posts, no comments, no DMs"
+        }
+      ],
+      "day": 10,
+      "label": ""
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "15-20 min"
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "1-2",
+          "note": "meaningful, 2-3 sentences each"
+        },
+        {
+          "type": "subscribe",
+          "count": "2-3",
+          "note": ""
+        }
+      ],
+      "day": 11,
+      "label": ""
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": ""
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "post_text",
+          "count": "1",
+          "note": "genuine question in anchor or general sub"
+        },
+        {
+          "type": "comment",
+          "count": "2-3",
+          "note": ""
+        },
+        {
+          "type": "reply",
+          "count": "",
+          "note": "respond to every comment on your post"
+        }
+      ],
+      "day": 12,
+      "label": ""
+    },
+    {
+      "actions": [
+        {
+          "type": "browse",
+          "count": "",
+          "note": "20-30 min"
+        },
+        {
+          "type": "upvote",
+          "count": "5-8",
+          "note": ""
+        },
+        {
+          "type": "comment",
+          "count": "3-4",
+          "note": "substantive, across general + anchor subs"
+        },
+        {
+          "type": "reply",
+          "count": "",
+          "note": "reply to comments on your earlier posts"
+        }
+      ],
+      "day": 13,
+      "label": ""
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "9 min",
+          "type": "browse"
+        },
+        {
+          "count": "2-3",
+          "note": "",
+          "type": "comment"
+        },
+        {
+          "count": "",
+          "note": "",
+          "type": "browse"
+        }
+      ],
+      "day": 14,
+      "label": "4 Account is now \"real\""
+    }
+  ]
+}

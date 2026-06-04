@@ -1,0 +1,87 @@
+{
+  "_comment": "Day archetype library — used by the Plans tab editor to pre-fill a day's label + actions from a small set of curated patterns. Curated from default-14-day and 14-day-plan, plus two defensive ones derived from observed shadow-bans (crispygopher_9 ignored shadow_rejected; steepsalmon_13 posted on Day 5 at karma=1).",
+  "archetypes": [
+    {
+      "slug": "lurk_only",
+      "label": "Lurk only",
+      "description": "Day 1 pattern: read-only, build session-cookie history with no visible output",
+      "actions": [
+        {"type": "browse", "count": "", "note": "10-15 min across 3-5 subs"},
+        {"type": "upvote", "count": "3-5", "note": "posts you actually read"},
+        {"type": "subscribe", "count": "3-5", "note": "popular sub picks (e.g. r/dexter, r/theoffice, r/friends)"},
+        {"type": "restriction", "count": "", "note": "No posts, no comments, no DMs"}
+      ]
+    },
+    {
+      "slug": "first_comments",
+      "label": "First comments",
+      "description": "Day 2 pattern: introduce 1-2 comments after a longer browse session",
+      "actions": [
+        {"type": "browse", "count": "", "note": "15-20 min, include 1-2 new subs"},
+        {"type": "upvote", "count": "5-8", "note": ""},
+        {"type": "comment", "count": "1-2", "note": "meaningful, 2-3+ sentences, in r/AskReddit or anchor sub"},
+        {"type": "subscribe", "count": "2-3", "note": ""}
+      ]
+    },
+    {
+      "slug": "build_rhythm",
+      "label": "Build rhythm",
+      "description": "Day 3-4 pattern: regular commenting + first replies + saves",
+      "actions": [
+        {"type": "browse", "count": "", "note": "15-20 min, different time of day from prior sessions"},
+        {"type": "upvote", "count": "5-8", "note": ""},
+        {"type": "comment", "count": "2", "note": "1 in general sub, 1 in anchor sub"},
+        {"type": "browse", "count": "", "note": "reply to any reply you got on prior comments"},
+        {"type": "save", "count": "3", "note": "save most popular posts from subscribed subs"}
+      ]
+    },
+    {
+      "slug": "comment_volume_up",
+      "label": "Comment volume up",
+      "description": "Day 4-5 pattern: scale comment count, introduce replies, still no original posts",
+      "actions": [
+        {"type": "browse", "count": "", "note": "20-30 min"},
+        {"type": "upvote", "count": "5-8", "note": ""},
+        {"type": "comment", "count": "3-4", "note": "substantive, across general subs"},
+        {"type": "restriction", "count": "", "note": "Avoid controversial subs (politics, news)"},
+        {"type": "browse", "count": "", "note": "reply to replies on your earlier comments"}
+      ]
+    },
+    {
+      "slug": "rest_day",
+      "label": "Rest day",
+      "description": "Light activity day — keeps the session warm without amplifying comment volume",
+      "actions": [
+        {"type": "browse", "count": "", "note": "normal browsing 10-15 min"},
+        {"type": "upvote", "count": "2", "note": ""}
+      ]
+    },
+    {
+      "slug": "first_post",
+      "label": "First post (Day 8+ only)",
+      "description": "Original content submission. Use only after Day 8 AND karma > 10. (steepsalmon_13 was banned for posting on Day 5 at karma=1.)",
+      "actions": [
+        {"type": "browse", "count": "", "note": "15-20 min, scout the target sub thoroughly"},
+        {"type": "upvote", "count": "5-8", "note": "in the sub you're about to post in"},
+        {"type": "post", "count": "1", "note": "text post in an anchor sub (NOT same sub as recent comments)"},
+        {"type": "restriction", "count": "", "note": "Do not comment in the same sub for at least 60 min after posting"}
+      ]
+    },
+    {
+      "slug": "recovery_after_shadow",
+      "label": "Recovery after shadow_rejected",
+      "description": "Use when a previous comment came back shadow_rejected. Stops submissions, restores credibility. (crispygopher_9 was banned for ignoring this signal.)",
+      "actions": [
+        {"type": "browse", "count": "", "note": "30 min, normal feed reading"},
+        {"type": "upvote", "count": "10-15", "note": "vote naturally on posts you actually read"},
+        {"type": "restriction", "count": "", "note": "ZERO comments, ZERO posts, ZERO subscribes today"}
+      ]
+    },
+    {
+      "slug": "blank",
+      "label": "(blank)",
+      "description": "Empty day — start from scratch",
+      "actions": []
+    }
+  ]
+}

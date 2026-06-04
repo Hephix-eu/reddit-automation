@@ -1,0 +1,150 @@
+{
+  "slug": "default-14-day",
+  "name": "Speed trail run 4-day",
+  "description": "Standard Reddit warmup \u2014 100+ karma, clears auto-filters",
+  "goal": "100+ karma, clear new-account auto-filters, build credible history",
+  "duration_days": 5,
+  "days": [
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "10-15 min across 3-5 subs",
+          "type": "browse"
+        },
+        {
+          "count": "3-5",
+          "note": "posts you actually read",
+          "type": "upvote"
+        },
+        {
+          "count": "1-2",
+          "note": "",
+          "type": "save"
+        },
+        {
+          "count": "3-5",
+          "note": "Subscribe to popular show subreddits - r/dexter, r/theoffice, r/friends",
+          "type": "subscribe"
+        },
+        {
+          "count": "",
+          "note": "No posts, no comments, no DMs",
+          "type": "restriction"
+        }
+      ],
+      "day": 1,
+      "label": "Lurk only"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "15-20 min, including 1-2 new subs",
+          "type": "browse"
+        },
+        {
+          "count": "5-8",
+          "note": "",
+          "type": "upvote"
+        },
+        {
+          "count": "1-2",
+          "note": "meaningful, 2-3+ sentences each, in general subs",
+          "type": "comment"
+        },
+        {
+          "count": "2-3",
+          "note": "",
+          "type": "subscribe"
+        },
+        {
+          "type": "comment",
+          "count": "2-4",
+          "note": "Comment on popular show subreddits new posts (10 - 30 min old posts) with show quotes relevant to the post"
+        }
+      ],
+      "day": 2,
+      "label": "First comments"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "15-20 min, different time of day from Day 2",
+          "type": "browse"
+        },
+        {
+          "count": "5-8",
+          "note": "",
+          "type": "upvote"
+        },
+        {
+          "count": "2",
+          "note": "1 in general sub, 1 in anchor sub",
+          "type": "comment"
+        },
+        {
+          "count": "",
+          "note": "reply to any reply you got on Day 2 comments",
+          "type": "reply"
+        },
+        {
+          "type": "save",
+          "count": "3",
+          "note": "Save most popular posts from subscribed subreddits"
+        }
+      ],
+      "day": 3,
+      "label": "Build rhythm"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "20-30 min",
+          "type": "browse"
+        },
+        {
+          "count": "5-8",
+          "note": "",
+          "type": "upvote"
+        },
+        {
+          "count": "3-4",
+          "note": "substantive, across general + anchor subs",
+          "type": "comment"
+        },
+        {
+          "count": "",
+          "note": "Avoid controversial subs (politics, relationships)",
+          "type": "restriction"
+        },
+        {
+          "count": "",
+          "note": "reply to replies on your earlier comments",
+          "type": "reply"
+        }
+      ],
+      "day": 4,
+      "label": "Comment volume up"
+    },
+    {
+      "actions": [
+        {
+          "count": "",
+          "note": "normal browsing 10-15 min",
+          "type": "browse"
+        },
+        {
+          "type": "upvote",
+          "count": "2",
+          "note": ""
+        }
+      ],
+      "day": 5,
+      "label": "Rest day"
+    }
+  ],
+  "created_at": "2026-05-28T11:11:43.508090+00:00"
+}
