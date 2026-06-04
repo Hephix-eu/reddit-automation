@@ -3,17 +3,23 @@
 Used by the test scripts AND by the agent during sessions. Keeps the
 scroll/dwell rhythm consistent across both contexts.
 
-Design notes:
-  - Mouse-wheel deltas vary per event, not constant.
-  - Bursts of 3-7 consecutive wheels (skimming) → reading pause → repeat.
-  - ~5% chance of a small reverse scroll (re-read).
-  - Total duration is approximate, not strict — humans don't time their browsing.
-  - All `time.sleep` durations are randomized in narrow but realistic bands.
+Design notes (calibrated from real trackpad wheel-event capture):
+  - Each gesture is a bell-curve momentum envelope: ramp → plateau → decay,
+    matching how macOS/trackpad inertia actually fires WheelEvents.
+  - Events fire at ~17 ms intervals (≈60 Hz), matching trackpad hardware.
+  - Per-event deltaY: 1–200 px; peak per gesture 15–120 px forward,
+    8–40 px reverse.
+  - ~15% of gestures scroll backward (re-read); these are full bell-curve
+    reverse gestures, not single events.
+  - Between-gesture pauses: quick re-skim 0.08–0.35 s (35%), normal read
+    0.6–1.8 s (40%), deep read 2–5 s (25%).
+  - Total duration is approximate — humans don't time their browsing.
 
-Anti-bot rationale: simple loops with constant deltas + constant sleeps
-produce a perfectly periodic scroll-velocity histogram. Anti-bot systems
-fingerprint that. Real users have heavy-tailed distributions in both delta
-and inter-event time.
+Anti-bot rationale: constant deltas + constant sleeps produce a periodic
+scroll-velocity histogram that anti-bot systems fingerprint. Real trackpad
+input has a bell-curve velocity envelope per gesture and ~17 ms inter-event
+timing — both very different from the naive "random big delta every 200ms"
+pattern.
 """
 
 import random
@@ -34,29 +40,46 @@ def human_scroll(page, *, duration_s: float = 60.0,
     distance = 0
 
     while time.time() < deadline:
-        # --- One "burst" = 3-7 wheels with short inter-wheel pauses ---
-        burst_len = r.randint(3, 7)
+        # ~15% chance of a full reverse (upward re-read) gesture
+        is_reverse = r.random() < 0.15
+        if is_reverse:
+            reverses += 1
+            peak = r.randint(8, 40)
+        else:
+            peak = r.randint(15, 120)
+
+        # Trackpad momentum produces ~20–55 events per gesture
+        n_events = r.randint(20, 55)
         bursts += 1
-        for _ in range(burst_len):
+
+        for i in range(n_events):
             if time.time() >= deadline:
                 break
-            # 5% reverse scroll within the burst
-            if r.random() < 0.05:
-                delta = -r.randint(150, 400)
-                reverses += 1
+            # Bell-curve envelope: ramp (0–25%) → plateau (25–55%) → decay
+            t = i / n_events
+            if t < 0.25:
+                env = t / 0.25
+            elif t < 0.55:
+                env = 1.0
             else:
-                delta = r.randint(250, 1100)
+                env = (1.0 - t) / 0.45
+            delta = max(1, int(peak * env * r.uniform(0.75, 1.25)))
+            if is_reverse:
+                delta = -delta
             page.mouse.wheel(0, delta)
             distance += abs(delta)
             wheels += 1
-            time.sleep(r.uniform(0.08, 0.45))
+            # ~17 ms between events, matching 60 Hz trackpad hardware
+            time.sleep(r.uniform(0.013, 0.022))
 
-        # --- Reading pause between bursts ---
-        # Two flavors: quick glance (0.6-1.8s) or read (2-5s). Heavy-tailed.
-        if r.random() < 0.7:
-            time.sleep(r.uniform(0.6, 1.8))
+        # Pause after gesture
+        p = r.random()
+        if p < 0.35:
+            time.sleep(r.uniform(0.08, 0.35))   # quick re-skim
+        elif p < 0.75:
+            time.sleep(r.uniform(0.6, 1.8))     # normal reading pause
         else:
-            time.sleep(r.uniform(2.0, 5.0))
+            time.sleep(r.uniform(2.0, 5.0))     # deep read
 
     return {
         "wheels": wheels,
