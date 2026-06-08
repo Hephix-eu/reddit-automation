@@ -26,6 +26,35 @@ Per-account autonomous Reddit warmup. Each account follows a 14-day plan (lurk �
    Reddit (anti-detect Chrome)
 ```
 
+## Architecture — three layers
+
+The deployment on hephix has three layers, dumb-to-smart:
+
+```
+  [cron]  →  [wrapper.sh]  →  [docker container running the agent]
+   dumb       gatekeeper          smart (LLM)
+   timer      bash                Claude
+```
+
+**Cron** (`/etc/cron.d/reddit-agent`) fires `scripts/run-on-host.sh --all` every 15 minutes. It knows nothing about accounts, Reddit, or scheduling — it just rings the bell.
+
+**Wrapper** (`scripts/run-on-host.sh`) is the cheap pre-flight check between cron and the agent. Every cron tick, it iterates `accounts/*/` and for each account walks a sequence of yes/no checks before deciding to spawn the (expensive) docker container:
+
+1. Is `lock` present and < 45 min old? → skip (currently running). Else stale-lock recovery: force-release the MLX cloud profile lock, then continue.
+2. Is `banned.json` present? → skip
+3. Is `manual.json` present? → skip
+4. Is `pause` file present? → skip
+5. Is `graduated.json` present? → skip
+6. Is `next_run.json.next_run_utc` in the past (or file absent)? → spawn. Else skip.
+
+It also self-heals the docker image: if `redditagent-image` is missing, it rebuilds from `Dockerfile.agent` and Telegrams a notice.
+
+When all checks pass, the wrapper runs the docker command shown under **Sidecar deployment** below.
+
+**Agent** (Claude Code inside the docker container) is the smart, expensive layer. Once spawned, it reads `plan.md`, queries `state.db` for the current day, performs the Reddit session via Multilogin + Playwright, writes results back to SQLite, and writes `next_run.json` with the next scheduled run time.
+
+**Why this split?** Cron can only fire on a schedule — no per-account intelligence. The agent is expensive to start (~10 s docker overhead + Claude API tokens per session). The wrapper is the cheap (~100 ms bash) gatekeeper that prevents wasted agent spawns when accounts are paused, banned, graduated, or just not due yet.
+
 ## File layout
 
 ```

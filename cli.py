@@ -464,69 +464,34 @@ def _persist_state_to_mlx(account_dir: Path) -> None:
         print(f"[wrapper] save_state failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
 
 
-def _maybe_write_graduated(account_dir: Path) -> None:
-    """If SQLite shows the warmup is complete, write graduated.json so the
-    scheduler stops firing further sessions. Idempotent + best-effort.
 
-    Detection (any of these in the latest Session row, or anywhere in
-    actions_log for the StateSnapshot path):
-      - StateSnapshot with action_type='warmup_complete' (salty_crow33 path)
-      - Session.result contains 'warmup_complete=True' (salty_crow33 path)
-      - Session.reasoning matches '%warmup%complete%' / '%Warmup%complete%'
-        (swift_viper14 path: "Warmup 5-day plan complete")
+def _reseed_cookies_if_fresh(account_dir: Path, mlx, folder_id: str, profile_id: str) -> None:
+    """If session_cookies.json exists and is < 7 days old, re-seed the MLX profile.
 
-    Mirror the shape of banned.json (status / *_at / reasoning).
+    The warmup agent writes session_cookies.json whenever it has to log in mid-session.
+    Re-seeding here ensures the next agent session starts already logged in, rather
+    than having to go through the login flow again.
     """
-    marker = account_dir / "graduated.json"
-    if marker.exists():
-        return
-    db_path = account_dir / "state.db"
-    if not db_path.exists():
+    cookie_file = account_dir / "session_cookies.json"
+    if not cookie_file.exists():
         return
     try:
-        import sqlite3 as _sqlite3
-        from datetime import datetime as _dt, timezone as _tz
-        with _sqlite3.connect(str(db_path)) as conn:
-            conn.row_factory = _sqlite3.Row
-            # Path A: explicit StateSnapshot marker written by an agent.
-            snap = conn.execute(
-                "SELECT day, executed_at, reasoning FROM actions_log "
-                "WHERE type='StateSnapshot' AND action_type='warmup_complete' "
-                "ORDER BY executed_at DESC LIMIT 1"
-            ).fetchone()
-            # Path B: latest Session row signals completion in result/reasoning.
-            sess = conn.execute(
-                "SELECT day, executed_at, result, reasoning FROM actions_log "
-                "WHERE type='Session' AND executed_at IS NOT NULL "
-                "ORDER BY executed_at DESC LIMIT 1"
-            ).fetchone()
-        reason_phrase = None
-        day = None
-        if snap is not None:
-            day = snap["day"]
-            reason_phrase = (snap["reasoning"] or "").strip().splitlines()[0][:160] if snap["reasoning"] else "warmup_complete StateSnapshot"
-        elif sess is not None:
-            result_s = (sess["result"] or "")
-            reasoning_s = (sess["reasoning"] or "")
-            hit = (
-                "warmup_complete=True" in result_s
-                or "warmup complete" in reasoning_s.lower()
-            )
-            if hit:
-                day = sess["day"]
-                first_line = (reasoning_s or result_s).strip().splitlines()[0][:160]
-                reason_phrase = first_line or "warmup_complete via Session row"
-        if reason_phrase is None:
+        data = json.loads(cookie_file.read_text())
+        saved_at_str = data.get("saved_at", "")
+        if saved_at_str:
+            from datetime import datetime, timezone, timedelta
+            saved_at = datetime.fromisoformat(saved_at_str)
+            if datetime.now(timezone.utc) - saved_at > timedelta(days=7):
+                print("  [reseed] session_cookies.json is > 7 days old — skipping reseed", file=sys.stderr)
+                return
+        cookies = data.get("cookies", [])
+        if not cookies:
             return
-        payload = {
-            "status": "graduated",
-            "graduated_at": _dt.now(_tz.utc).isoformat(),
-            "reasoning": f"Day {day} warmup_complete=True — {reason_phrase}" if day else reason_phrase,
-        }
-        marker.write_text(json.dumps(payload, indent=2))
-        print(f"[wrapper] wrote graduated.json (day={day}): {reason_phrase[:80]}", file=sys.stderr)
+        print(f"  [reseed] seeding {len(cookies)} saved cookies into MLX profile…", file=sys.stderr)
+        _seed_reddit_cookies(mlx, folder_id, profile_id, cookies)
+        print("  [reseed] done", file=sys.stderr)
     except Exception as e:
-        print(f"[wrapper] graduated.json check failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+        print(f"  [reseed] skipped (could not load session_cookies.json): {e}", file=sys.stderr)
 
 
 def cmd_run(username: str, force: bool = False):
@@ -561,12 +526,25 @@ def cmd_run(username: str, force: bool = False):
     # errors worth logging on every call.
     if (account_dir / "pause").exists():
         sys.exit(0)
-    if (account_dir / "graduated.json").exists():
-        sys.exit(0)
 
     lock_path = account_dir / "lock"
     next_run_path = account_dir / "next_run.json"
     next_run_mtime_before = next_run_path.stat().st_mtime if next_run_path.exists() else 0.0
+
+    # Pre-seed MLX profile with any freshly saved session cookies so the agent
+    # starts already logged in. Best-effort: failures here are non-fatal.
+    try:
+        _load_env_files(ROOT / ".env", account_dir / ".env")
+        config = json.loads((account_dir / "config.json").read_text())
+        profile_id_cfg = config.get("multilogin", {}).get("profile_id", "")
+        folder_id_cfg = config.get("multilogin", {}).get("folder_id", "")
+        if (profile_id_cfg and not profile_id_cfg.startswith("TODO_")
+                and folder_id_cfg and not folder_id_cfg.startswith("TODO_")):
+            from lib.multilogin import make_client
+            mlx_pre = make_client()
+            _reseed_cookies_if_fresh(account_dir, mlx_pre, folder_id_cfg, profile_id_cfg)
+    except Exception as _pre_err:
+        print(f"[wrapper] pre-run cookie reseed skipped: {_pre_err}", file=sys.stderr)
 
     user_message = (
         f"AUTONOMOUS WARMUP SESSION for account={username}. "
@@ -604,7 +582,7 @@ def cmd_run(username: str, force: bool = False):
     # on hephix where the agent runs as root in a Multilogin-isolated environment.
     env = {**os.environ, "IS_SANDBOX": "1"}
 
-    SESSION_TIMEOUT_SEC = 30 * 60
+    SESSION_TIMEOUT_SEC = 45 * 60
     rc = 1
     timed_out = False
     session_start_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -735,29 +713,9 @@ def cmd_run(username: str, force: bool = False):
             except Exception as _e:
                 print(f"[wrapper] could not archive session.log: {_e}", file=sys.stderr)
 
-        next_run_mtime_after = next_run_path.stat().st_mtime if next_run_path.exists() else 0.0
-        if next_run_mtime_after <= next_run_mtime_before:
-            # +2h fallback gives time to inspect the run before cron re-fires.
-            fallback_when = datetime.now(timezone.utc) + timedelta(hours=2)
-            reason = (
-                "wrapper_fallback_timeout" if timed_out
-                else f"wrapper_fallback_agent_exit_{rc}"
-            )
-            next_run_path.write_text(json.dumps({
-                "next_run_utc": fallback_when.isoformat(),
-                "reason": reason,
-                "written_at": datetime.now(timezone.utc).isoformat(),
-            }, indent=2))
-            print(f"[wrapper] agent did not update next_run.json — wrote +2h fallback ({reason})", file=sys.stderr)
-
         # 3. Mirror SQLite truth to MLX profile notes (best-effort).
         # SQLite is authoritative; this just keeps the cross-machine snapshot fresh.
         _persist_state_to_mlx(account_dir)
-
-        # 4. If SQLite says warmup is complete, drop a graduated.json marker so
-        # run-on-host.sh + cli.py stop firing further sessions. Idempotent.
-        # More reliable than asking the LLM agent to write the file itself.
-        _maybe_write_graduated(account_dir)
 
     sys.exit(rc)
 

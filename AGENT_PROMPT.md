@@ -66,6 +66,119 @@ If you suspect stealth is genuinely broken (e.g., Reddit shows captcha repeatedl
 
 Open Multilogin profile + Playwright + start ffmpeg recording before any Reddit activity.
 
+### Login verification (mandatory before any Reddit activity)
+
+After opening the browser, navigate to reddit.com and **immediately check login state before doing any warmup work**:
+
+```python
+import re, json, time, random
+from datetime import datetime, timezone
+
+page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30_000)
+time.sleep(random.uniform(2, 3))
+
+login_btn = page.get_by_role("button", name=re.compile(r"log.?in", re.I))
+is_logged_out = login_btn.count() > 0
+```
+
+**If `is_logged_out` is True — perform login before anything else:**
+
+1. Log the event:
+   ```python
+   db.insert(state_db, type='Action', action_type='login_required', status='in_progress',
+             day=day, session_id=session_id,
+             reasoning='Login button visible on reddit.com — session cookies expired or missing')
+   ```
+
+2. Perform login using credentials from the account `.env` (already in environment as `REDDIT_USERNAME`, `REDDIT_PASSWORD`):
+   ```python
+   username = os.environ["REDDIT_USERNAME"]
+   password = os.environ["REDDIT_PASSWORD"]
+
+   login_btn.first.click()
+   time.sleep(random.uniform(1.5, 2.5))
+
+   # Username field
+   for sel in ['input[name="username"]', 'input#login-username', 'input[autocomplete="username"]']:
+       try:
+           if page.locator(sel).first.is_visible(timeout=2000):
+               page.click(sel)
+               break
+       except Exception:
+           continue
+   time.sleep(random.uniform(0.4, 0.8))
+   for ch in username:
+       page.keyboard.type(ch, delay=random.uniform(80, 150))
+   time.sleep(random.uniform(0.5, 1.0))
+
+   # Password field
+   for sel in ['input[name="password"]', 'input#login-password',
+               'input[autocomplete="current-password"]', 'input[type="password"]']:
+       try:
+           if page.locator(sel).first.is_visible(timeout=2000):
+               page.click(sel)
+               break
+       except Exception:
+           continue
+   time.sleep(random.uniform(0.3, 0.6))
+   for ch in password:
+       page.keyboard.type(ch, delay=random.uniform(80, 150))
+   time.sleep(random.uniform(0.8, 1.2))
+
+   # Submit
+   submitted = False
+   for sel in ['button[type="submit"]', 'button:has-text("Log In")', 'button:has-text("Continue")']:
+       try:
+           btn = page.locator(sel).first
+           if btn.is_visible(timeout=2000):
+               btn.click()
+               submitted = True
+               break
+       except Exception:
+           continue
+   if not submitted:
+       page.keyboard.press("Enter")
+
+   time.sleep(15)  # wait for redirect + cookie set
+   ```
+
+3. Verify login succeeded (login button should be gone; user menu or avatar should appear):
+   ```python
+   still_logged_out = page.get_by_role("button", name=re.compile(r"log.?in", re.I)).count() > 0
+   ```
+
+4. **On success** — extract and save the fresh session cookies:
+   ```python
+   all_cookies = page.context.cookies()
+   session_cookies = [
+       {"name": c["name"], "value": c["value"]}
+       for c in all_cookies
+       if "reddit.com" in c.get("domain", "")
+       and c["name"] in ("reddit_session", "token_v2", "loid", "session_tracker")
+   ]
+   # Persist for future re-seeding (read by cli.py start --auto on next onboard)
+   (account_dir / "session_cookies.json").write_text(
+       json.dumps({"cookies": session_cookies,
+                   "saved_at": datetime.now(timezone.utc).isoformat()}, indent=2)
+   )
+   db.insert(state_db, type='Action', action_type='login_ok', status='done',
+             day=day, session_id=session_id,
+             reasoning=f'Logged in as {username}, {len(session_cookies)} cookies captured and saved')
+   ```
+
+5. **On failure** (login button still visible after 15s wait):
+   ```python
+   db.insert(state_db, type='Error', action_type='login_failed',
+             day=day, session_id=session_id,
+             reasoning='Login button still present after login attempt — wrong password or captcha block')
+   # reschedule +6hrs, release lock, exit 1
+   ```
+   Do **not** proceed with warmup if login failed.
+
+**If already logged in** — continue directly to the session shape below. No extra navigation needed.
+
+---
+
 ### Humanlike browsing primitives
 
 Use `lib/browse.py` helpers for any scrolling/dwell:
@@ -378,7 +491,7 @@ Never schedule exactly on the hour or :30 — round to a non-round minute (e.g. 
 | Captcha appears | Screenshot. Write `Type=Error, Action_Type=captcha`. Stop session, reschedule +6hrs, exit 1. |
 | Rate-limit message ("doing this too much") | Write `Error`. Reschedule +12hrs. |
 | Comment auto-removed by AutoMod | Don't retry. Write `Result=automod_removed` on the action row. |
-| Logged out of Reddit | Try once to re-login from `.env` creds. If fails, write `Error`, reschedule +6hrs. |
+| Logged out of Reddit | Follow the "Login verification" boot step: login from `.env` creds, save cookies to `session_cookies.json`. If login fails, write `Error`, reschedule +6hrs, exit 1. |
 | Multilogin signin fails | Write `Error`. Reschedule +1hr. After 3 consecutive signin failures, escalate (push next_run to +24hrs and exit). |
 | CreepJS trust score below threshold | See stealth verification step. |
 | SQLite write fails | Should be near-impossible (local file). If `database is locked` from concurrent access, retry 3x with 100ms backoff. If still failing, log to `agent.log` and continue. |

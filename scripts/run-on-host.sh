@@ -75,7 +75,7 @@ should_fire() {
     # (not '') when the key exists with null value, and `print(None)` would emit
     # the literal "None", which string-compares above any real ISO timestamp.
     nxt=$(python3 -c "import json;d=json.load(open('$marker'));v=d.get('next_run_utc') or '';print(v)" 2>/dev/null || echo "")
-    [[ -z "$nxt" ]] && return 0
+    [[ -z "$nxt" ]] && return 1  # null/empty = terminal (done), do not fire
     # Compare next_run_utc with now (both ISO8601 UTC). String compare works for ISO.
     local now
     now=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
@@ -133,11 +133,6 @@ run_one() {
 
     if [[ -f "$REPO/accounts/$user/pause" ]]; then
         log "$user: paused — skipping"
-        return 0
-    fi
-
-    if [[ -f "$REPO/accounts/$user/graduated.json" ]]; then
-        log "$user: warmup_complete — skipping"
         return 0
     fi
 
