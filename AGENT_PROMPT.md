@@ -77,6 +77,13 @@ from datetime import datetime, timezone
 page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30_000)
 time.sleep(random.uniform(2, 3))
 
+# Dismiss GDPR/cookie consent popup before anything else.
+# Language-agnostic — accounts may have different locales configured so
+# text-based selectors ("Reject non-essential") are unreliable.
+from lib.browse import dismiss_cookie_popup
+if dismiss_cookie_popup(page):
+    time.sleep(random.uniform(1, 2))
+
 login_btn = page.get_by_role("button", name=re.compile(r"log.?in", re.I))
 is_logged_out = login_btn.count() > 0
 ```

@@ -1,9 +1,5 @@
 {
-  "slug": "default-14-day",
-  "name": "Speed trail run 4-day",
-  "description": "Standard Reddit warmup \u2014 100+ karma, clears auto-filters",
-  "goal": "100+ karma, clear new-account auto-filters, build credible history",
-  "duration_days": 5,
+  "created_at": "2026-05-28T11:11:43.508090+00:00",
   "days": [
     {
       "actions": [
@@ -59,9 +55,9 @@
           "type": "subscribe"
         },
         {
-          "type": "comment",
           "count": "2-4",
-          "note": "Comment on popular show subreddits new posts (10 - 30 min old posts) with show quotes relevant to the post"
+          "note": "Comment on popular show subreddits new posts (10 - 30 min old posts) with show quotes relevant to the post",
+          "type": "comment"
         }
       ],
       "day": 2,
@@ -90,9 +86,9 @@
           "type": "reply"
         },
         {
-          "type": "save",
           "count": "3",
-          "note": "Save most popular posts from subscribed subreddits"
+          "note": "Save most popular posts from subscribed subreddits",
+          "type": "save"
         }
       ],
       "day": 3,
@@ -137,14 +133,18 @@
           "type": "browse"
         },
         {
-          "type": "upvote",
           "count": "2",
-          "note": ""
+          "note": "",
+          "type": "upvote"
         }
       ],
       "day": 5,
       "label": "Rest day"
     }
   ],
-  "created_at": "2026-05-28T11:11:43.508090+00:00"
+  "description": "Standard Reddit warmup — 100+ karma, clears auto-filters",
+  "duration_days": 5,
+  "goal": "100+ karma, clear new-account auto-filters, build credible history",
+  "name": "Speed trail run 4-day",
+  "slug": "default-14-day"
 }

@@ -97,6 +97,50 @@ def dwell(seconds_min: float = 0.4, seconds_max: float = 1.5,
     time.sleep(r.uniform(seconds_min, seconds_max))
 
 
+def dismiss_cookie_popup(page, *, rng: random.Random | None = None) -> bool:
+    """Dismiss Reddit's GDPR/cookie consent popup without relying on button text.
+
+    Language-agnostic: uses structural CSS and data-testid selectors rather than
+    visible text, so it works regardless of which language the account has configured.
+
+    Targets the reject/decline action (minimises data exposure). Returns True if a
+    popup was found and dismissed, False if nothing was visible.
+    """
+    r = rng or random
+
+    # Ordered most-specific → most-generic; stops at first visible match.
+    selectors = [
+        # Shreddit (new Reddit) custom element — last button is always Reject
+        "shreddit-cookie-banner button:last-of-type",
+        # data-testid patterns from Reddit's consent form source
+        '[data-testid="gdpr-consent-reject"]',
+        '[data-testid="reject-nonessential"]',
+        '[data-testid="gdpr-reject"]',
+        '[data-testid="reject"]',
+        # Named form container — last button = reject
+        "#gdpr-consent-form button:last-of-type",
+        "#GDPR-consent-form button:last-of-type",
+        # Class-heuristic: secondary/outline button inside a consent/cookie wrapper
+        '[class*="gdpr"] button[class*="secondary"]',
+        '[class*="consent"] button[class*="secondary"]',
+        '[class*="cookie"] button[class*="secondary"]',
+        # Aria-labelled dialog containing cookie/consent reference
+        '[aria-label*="Cookie" i] button:last-of-type',
+        '[aria-label*="consent" i] button:last-of-type',
+    ]
+
+    for sel in selectors:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=500):
+                btn.click()
+                time.sleep(r.uniform(0.8, 1.5))
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def get_post_permalink(btn) -> tuple[str | None, str | None]:
     """Return (target_url, subreddit) from any button inside a <shreddit-post>.
 
