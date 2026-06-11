@@ -86,6 +86,17 @@ if dismiss_cookie_popup(page):
 
 login_btn = page.get_by_role("button", name=re.compile(r"log.?in", re.I))
 is_logged_out = login_btn.count() > 0
+
+# Positive auth check — cookies can be present but expired/invalid, so even
+# when no login button is visible, confirm the session is actually live.
+# reddit.com/settings redirects to reddit.com/login when not authenticated.
+if not is_logged_out:
+    page.goto("https://www.reddit.com/settings", wait_until="domcontentloaded", timeout=20_000)
+    if "reddit.com/login" in page.url:
+        # Back to home so the login flow below starts from the expected page
+        page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30_000)
+        time.sleep(random.uniform(2, 3))
+        is_logged_out = True
 ```
 
 **If `is_logged_out` is True — perform login before anything else:**
@@ -94,7 +105,7 @@ is_logged_out = login_btn.count() > 0
    ```python
    db.insert(state_db, type='Action', action_type='login_required', status='in_progress',
              day=day, session_id=session_id,
-             reasoning='Login button visible on reddit.com — session cookies expired or missing')
+             reasoning='Session not authenticated (login button visible or /settings redirected to /login)')
    ```
 
 2. Perform login using credentials from the account `.env` (already in environment as `REDDIT_USERNAME`, `REDDIT_PASSWORD`):
@@ -102,7 +113,12 @@ is_logged_out = login_btn.count() > 0
    username = os.environ["REDDIT_USERNAME"]
    password = os.environ["REDDIT_PASSWORD"]
 
-   login_btn.first.click()
+   # Open the login form — button text varies by locale, so fall back to
+   # navigating directly to /login if the English-matched locator found nothing.
+   if login_btn.count() > 0:
+       login_btn.first.click()
+   else:
+       page.goto("https://www.reddit.com/login", wait_until="domcontentloaded", timeout=20_000)
    time.sleep(random.uniform(1.5, 2.5))
 
    # Username field
@@ -134,7 +150,7 @@ is_logged_out = login_btn.count() > 0
 
    # Submit
    submitted = False
-   for sel in ['button[type="submit"]', 'button:has-text("Log In")', 'button:has-text("Continue")']:
+   for sel in ['button[type="submit"]']:
        try:
            btn = page.locator(sel).first
            if btn.is_visible(timeout=2000):
@@ -182,7 +198,7 @@ is_logged_out = login_btn.count() > 0
    ```
    Do **not** proceed with warmup if login failed.
 
-**If already logged in** — continue directly to the session shape below. No extra navigation needed.
+**If `is_logged_out` is False (no login button AND `/settings` did not redirect to `/login`)** — continue directly to the session shape below. No extra navigation needed.
 
 ---
 
