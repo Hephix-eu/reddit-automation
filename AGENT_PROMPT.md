@@ -85,18 +85,23 @@ if dismiss_cookie_popup(page):
     time.sleep(random.uniform(1, 2))
 
 login_btn = page.get_by_role("button", name=re.compile(r"log.?in", re.I))
-is_logged_out = login_btn.count() > 0
+# Positive confirmation that we're authenticated — shreddit-user-drawer-button
+# is the profile/avatar web component that only renders for logged-in users.
+user_menu = page.locator("shreddit-user-drawer-button")
 
-# Positive auth check — cookies can be present but expired/invalid, so even
-# when no login button is visible, confirm the session is actually live.
-# reddit.com/settings redirects to reddit.com/login when not authenticated.
-if not is_logged_out:
-    page.goto("https://www.reddit.com/settings", wait_until="domcontentloaded", timeout=20_000)
-    if "reddit.com/login" in page.url:
-        # Back to home so the login flow below starts from the expected page
-        page.goto("https://www.reddit.com/", wait_until="domcontentloaded", timeout=30_000)
-        time.sleep(random.uniform(2, 3))
-        is_logged_out = True
+if login_btn.count() > 0:
+    # Login button visible — definitely logged out
+    is_logged_out = True
+elif user_menu.count() > 0:
+    # User avatar present — confirmed logged in
+    is_logged_out = False
+else:
+    # Neither login button nor user menu — likely a JS challenge or blank page.
+    # Navigate directly to /login to force the auth state to resolve.
+    page.goto("https://www.reddit.com/login", wait_until="domcontentloaded", timeout=20_000)
+    time.sleep(random.uniform(2, 3))
+    # If we landed on /login (not redirected away to home/feed), we're logged out
+    is_logged_out = "reddit.com/login" in page.url
 ```
 
 **If `is_logged_out` is True — perform login before anything else:**
@@ -105,7 +110,7 @@ if not is_logged_out:
    ```python
    db.insert(state_db, type='Action', action_type='login_required', status='in_progress',
              day=day, session_id=session_id,
-             reasoning='Session not authenticated (login button visible or /settings redirected to /login)')
+             reasoning='Session not authenticated (login button visible, user menu absent, or /login page reached)')
    ```
 
 2. Perform login using credentials from the account `.env` (already in environment as `REDDIT_USERNAME`, `REDDIT_PASSWORD`):
@@ -198,7 +203,7 @@ if not is_logged_out:
    ```
    Do **not** proceed with warmup if login failed.
 
-**If `is_logged_out` is False (no login button AND `/settings` did not redirect to `/login`)** — continue directly to the session shape below. No extra navigation needed.
+**If `is_logged_out` is False (user menu confirmed present, or `/login` redirected away)** — continue directly to the session shape below. No extra navigation needed.
 
 ---
 

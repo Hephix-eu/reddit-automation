@@ -135,6 +135,16 @@ def dismiss_cookie_popup(page, *, rng: random.Random | None = None) -> bool:
             if btn.is_visible(timeout=500):
                 btn.click()
                 time.sleep(r.uniform(0.8, 1.5))
+                # Stamp localStorage so Reddit suppresses the banner on all
+                # subsequent page navigations within this session.
+                try:
+                    page.evaluate("""() => {
+                        try { localStorage.setItem('gdprConsentExpiry', String(Date.now() + 365*24*60*60*1000)); } catch(e) {}
+                        try { localStorage.setItem('euCookieConsentExpiry', String(Date.now() + 365*24*60*60*1000)); } catch(e) {}
+                        try { localStorage.setItem('consentExpiry', String(Date.now() + 365*24*60*60*1000)); } catch(e) {}
+                    }""")
+                except Exception:
+                    pass
                 return True
         except Exception:
             continue
