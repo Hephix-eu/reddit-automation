@@ -27,6 +27,20 @@ ACCOUNTS_DIR = ROOT / "accounts"
 TEMPLATE_CONFIG = ROOT / "config.template.json"
 TEMPLATE_PLAN = ROOT / "plan.md"
 AGENT_PROMPT = ROOT / "AGENT_PROMPT.md"
+ACCTFARM_CREDENTIALS = ROOT.parent / "acctfarm" / "credentials.json"
+
+
+def _acctfarm_signup_sid(username: str) -> str | None:
+    """Return the proxy SID used during signup for this username, or None."""
+    if not ACCTFARM_CREDENTIALS.exists():
+        return None
+    try:
+        accounts = json.loads(ACCTFARM_CREDENTIALS.read_text())
+        entry = next((a for a in accounts
+                      if a.get("service") == "reddit" and a.get("username") == username), None)
+        return entry.get("signup_sid") if entry else None
+    except Exception:
+        return None
 
 
 def _seed_reddit_cookies(mlx, folder_id: str, profile_id: str, cookies: list) -> None:
@@ -155,13 +169,18 @@ def cmd_start(username: str, profile_id: str | None = None, auto: bool = False, 
         proxy_sid = None
         if os.environ.get("MULTILOGIN_PROXY_USERNAME"):
             base_username = os.environ["MULTILOGIN_PROXY_USERNAME"]
-            # Rotate the gate.multilogin.com sticky-session ID per account so each
-            # profile gets a different exit IP. Without this, all accounts share the
-            # workspace SID -> same IP -> linkable fingerprint (2026-06-02 ban cluster).
             if "sid-" in base_username:
                 from mlx_client import gen_sid, rotate_proxy_sid
-                proxy_sid = gen_sid()
-                proxy_username = rotate_proxy_sid(base_username, proxy_sid)
+                signup_sid = _acctfarm_signup_sid(username)
+                if signup_sid:
+                    # Reuse the SID from signup so warmup shares the same exit IP
+                    proxy_sid = signup_sid
+                    proxy_username = rotate_proxy_sid(base_username, proxy_sid)
+                    print(f"  Reusing signup SID {proxy_sid} for IP continuity")
+                else:
+                    # No signup record — rotate a fresh SID as before
+                    proxy_sid = gen_sid()
+                    proxy_username = rotate_proxy_sid(base_username, proxy_sid)
             else:
                 proxy_username = base_username
             proxy = {
