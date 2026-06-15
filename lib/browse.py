@@ -25,6 +25,7 @@ pattern.
 import bisect
 import math
 import random
+import re
 import time
 
 # Persists last known cursor position across calls so moves don't teleport.
@@ -285,6 +286,21 @@ def dismiss_cookie_popup(page, *, rng: random.Random | None = None) -> bool:
                     }""")
                 except Exception:
                     pass
+                return True
+        except Exception:
+            continue
+
+    # Text-based fallback for Reddit's newer "cookie preferences" modal, whose
+    # buttons are plain <button>s with visible text (the structural selectors
+    # above miss it). Prefer the reject/decline action; fall back to accept so
+    # the overlay never blocks the composer. English-locale accounts only.
+    for pat in (r"reject optional|reject all|reject non|decline|necessary only",
+                r"accept all|accept"):
+        try:
+            b = page.get_by_role("button", name=re.compile(pat, re.I)).first
+            if b.count() > 0 and b.is_visible(timeout=500):
+                b.click(timeout=4000)
+                time.sleep(r.uniform(0.8, 1.5))
                 return True
         except Exception:
             continue
