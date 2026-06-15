@@ -292,9 +292,12 @@ Long comments from a brand-new account are a stronger bot signal than rate. A 3-
 **Always** open the browser via `lib.multilogin.browser_session`. It handles MLX signin, Playwright connect, and CDP video recording in one shot — you cannot accidentally omit any of the three.
 
 ```python
+import uuid
 from lib.multilogin import browser_session
 
-with browser_session(config, account_dir, session_id=sid) as (mlx, profile_id, page):
+session_id = str(uuid.uuid4())  # generate ONCE — pass this same value to every db.insert()
+
+with browser_session(config, account_dir, session_id=session_id) as (mlx, profile_id, page):
     # ALL warmup work goes here.
     # Recording starts automatically when this block is entered and
     # the mp4 is finalised on disk when this block exits.
