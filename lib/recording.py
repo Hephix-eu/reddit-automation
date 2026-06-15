@@ -15,6 +15,7 @@ Usage:
 Failures are swallowed — recording is best-effort, never crashes the session.
 """
 import base64
+import io
 import subprocess
 import sys
 import time
@@ -22,6 +23,29 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+
+
+def _draw_cursor_on_frame(jpeg_bytes: bytes, px: float, py: float) -> bytes:
+    """Overlay a cursor ring at pixel position (px, py) on a JPEG frame.
+
+    Best-effort — returns original bytes unchanged if PIL is unavailable or
+    anything fails. Draws a two-tone ring (black outer + orange inner) with a
+    small white centre dot so the cursor is visible against any background.
+    """
+    try:
+        from PIL import Image, ImageDraw
+        img = Image.open(io.BytesIO(jpeg_bytes))
+        draw = ImageDraw.Draw(img)
+        ix, iy = int(round(px)), int(round(py))
+        r = 10
+        draw.ellipse([ix-r-2, iy-r-2, ix+r+2, iy+r+2], outline=(0, 0, 0), width=2)
+        draw.ellipse([ix-r,   iy-r,   ix+r,   iy+r  ], outline=(255, 80, 0), width=3)
+        draw.ellipse([ix-2,   iy-2,   ix+2,   iy+2  ], fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=60)
+        return buf.getvalue()
+    except Exception:
+        return jpeg_bytes
 
 
 @contextmanager
@@ -49,6 +73,17 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
     started = False
     frames_received = [0]
 
+    # Viewport size for cursor coordinate scaling (CSS px → frame px).
+    # Assumed device pixel ratio = 1 for desktop Multilogin profiles.
+    try:
+        vp = page.viewport_size() or {}
+    except Exception:
+        vp = {}
+    _vp_w = float(vp.get("width", 1280))
+    _vp_h = float(vp.get("height", 720))
+    # Scale from viewport CSS pixels to frame pixels (maxWidth=1280, maxHeight=720).
+    _cursor_scale = min(1280.0 / _vp_w, 720.0 / _vp_h, 1.0)
+
     # ── setup (best-effort, never propagates) ─────────────────────────────
     try:
         ffmpeg = subprocess.Popen([
@@ -70,8 +105,21 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
 
         def on_frame(event):
             try:
+                frame_bytes = base64.b64decode(event["data"])
+                # Overlay the cursor position tracked by lib.browse mouse helpers.
+                try:
+                    from lib.browse import get_cursor_pos
+                    pos = get_cursor_pos()
+                    if pos is not None:
+                        frame_bytes = _draw_cursor_on_frame(
+                            frame_bytes,
+                            pos[0] * _cursor_scale,
+                            pos[1] * _cursor_scale,
+                        )
+                except Exception:
+                    pass
                 if ffmpeg.poll() is None and ffmpeg.stdin and not ffmpeg.stdin.closed:
-                    ffmpeg.stdin.write(base64.b64decode(event["data"]))
+                    ffmpeg.stdin.write(frame_bytes)
                     frames_received[0] += 1
                 cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
             except BrokenPipeError:

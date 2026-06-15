@@ -96,6 +96,11 @@ def human_click(page, x: float, y: float, *,
     _last_mouse_pos = (x, y)
 
 
+def get_cursor_pos() -> tuple[float, float] | None:
+    """Return the last known cursor position in viewport CSS pixels, or None."""
+    return _last_mouse_pos
+
+
 def click_element(page, locator, *,
                   rng: random.Random | None = None,
                   button: str = "left") -> None:

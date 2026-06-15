@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends         curl ca
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -     && apt-get install -y --no-install-recommends nodejs     && rm -rf /var/lib/apt/lists/*
 
 # Python deps.
-RUN pip install --no-cache-dir playwright==1.48.0 requests
+RUN pip install --no-cache-dir playwright==1.48.0 requests pillow
 
 # Chromium for Playwright (the agent uses CDP, but Playwright still needs
 # a binary registered to load the driver bundle cleanly).
