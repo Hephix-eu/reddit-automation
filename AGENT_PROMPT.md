@@ -64,7 +64,7 @@ If you suspect stealth is genuinely broken (e.g., Reddit shows captcha repeatedl
 
 ## Session execution
 
-Open Multilogin profile + Playwright + start ffmpeg recording before any Reddit activity.
+Open Multilogin profile + Playwright + start CDP recording in one call via `browser_session`.
 
 ### Login verification (mandatory before any Reddit activity)
 
@@ -287,24 +287,22 @@ Long comments from a brand-new account are a stronger bot signal than rate. A 3-
 
 ---
 
-### Session video recording (audit / debugging)
+### Opening the browser (mandatory — use `browser_session`, never roll your own)
 
-Wrap your warmup work in `lib.recording.record_session` so the entire browsing session is captured as a single mp4. Files land in `accounts/<user>/recordings/<utc-timestamp>_<sid8>.mp4` and auto-rotate after 7 days via cron.
+**Always** open the browser via `lib.multilogin.browser_session`. It handles MLX signin, Playwright connect, and CDP video recording in one shot — you cannot accidentally omit any of the three.
 
 ```python
-from lib import recording
+from lib.multilogin import browser_session
 
-with multilogin.session(config) as (mlx, pid, port):
-    with sync_playwright() as pw:
-        browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-        page = browser.contexts[0].pages[0]
-        with recording.record_session(page, account_dir / "recordings", session_id=sid):
-            # ALL warmup work goes here — recording stops when this block exits
-            ...
-        # By here the mp4 is finalized on disk
+with browser_session(config, account_dir, session_id=sid) as (mlx, profile_id, page):
+    # ALL warmup work goes here.
+    # Recording starts automatically when this block is entered and
+    # the mp4 is finalised on disk when this block exits.
+    ...
+# profile stopped, mp4 on disk
 ```
 
-Recording is best-effort — if ffmpeg crashes or CDP screencast fails, your session continues. Always nest it INSIDE the multilogin session so the page is alive when you start, and OUTSIDE your work block so it captures everything.
+Do NOT call `multilogin.session()` + `sync_playwright()` manually — that path skips recording. `browser_session` is the only correct entry point for agent sessions. Recording is best-effort: if ffmpeg is absent the session continues, but the dashboard will show no video.
 
 ### Selector recipes (shreddit / new Reddit)
 
@@ -491,18 +489,16 @@ Every row gets: `Day`, `Session_ID` (UUID generated at session start), `Profile_
 
 ## End of session
 
-1. Stop ffmpeg recording. Write recording path to last action's `Result` if relevant.
-2. Exit Playwright cleanly (close pages, exit `with` block — DO NOT call `browser.close()`).
-3. Stop Multilogin profile via `/api/v1/profile/stop/p/{profile_id}` GET.
-4. Compute next-run time (see "Next invocation" below).
-5. Write `Type=Session, Status=done, Day=N, Result=<summary>, Scheduled_For=<next_time>` row.
-6. Persist session metadata to Multilogin profile `notes` (JSON-merged via `mlx.save_state`). The wrapper guarantees `day`, `actions_taken`, `last_session_id`, `last_executed_at` from SQLite — you DO NOT need to write those. **Your job is the two narrative + truth fields:**
+1. Exit the `browser_session` `with` block — this automatically stops recording, exits Playwright, and stops the Multilogin profile (DO NOT call `browser.close()` or `mlx.stop()` manually; `browser_session` does both).
+2. Compute next-run time (see "Next invocation" below).
+3. Write `Type=Session, Status=done, Day=N, Result=<summary>, Scheduled_For=<next_time>` row.
+4. Persist session metadata to Multilogin profile `notes` (JSON-merged via `mlx.save_state`). The wrapper guarantees `day`, `actions_taken`, `last_session_id`, `last_executed_at` from SQLite — you DO NOT need to write those. **Your job is the two narrative + truth fields:**
    - **`karma`** (real Reddit karma — int): fetch from `https://www.reddit.com/user/<reddit_username>/about.json` via `page.request.get(...)` while still logged in. Read `data.total_karma`. Write this back to notes BEFORE `mlx.stop()` so the proxy/session is still active. Without this, `karma` stays null and we can't measure progress vs the 100-by-Day-8 target.
    - **`last_session_summary`** (string, 1-3 sentences): what landed this session and what's open. The watchdog and next agent read this to decide what to do.
    - **Do NOT write `total_karma`** — that field is deprecated and intentionally misnamed. The wrapper strips it. Use `actions_taken` if you need the action count.
-7. Update Task Scheduler / cron to fire at next-run time.
-8. Release lock (delete `lock` file).
-9. Exit 0.
+5. Update Task Scheduler / cron to fire at next-run time.
+6. Release lock (delete `lock` file).
+7. Exit 0.
 
 ---
 

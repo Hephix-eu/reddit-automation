@@ -82,3 +82,47 @@ def session(config: dict):
         yield mlx, pid, port
     finally:
         mlx.stop(pid)
+
+
+@contextmanager
+def browser_session(config: dict, account_dir, session_id: str | None = None):
+    """Open the MLX profile, connect Playwright, start CDP recording — yield (mlx, profile_id, page).
+
+    This is the preferred entry point for agent sessions. It combines the
+    MLX profile lifecycle, Playwright connection, and session video recording
+    into one context manager so none of the three can be accidentally omitted.
+
+    Recording is best-effort: if ffmpeg is missing or CDP screencast fails the
+    session continues normally — recording.py swallows setup errors.
+
+    Lifecycle:
+      1. Signin to Multilogin cloud + start profile → CDP port
+      2. Connect Playwright, get the first page
+      3. Start lib.recording.record_session on that page
+      4. yield (mlx, profile_id, page)
+      5. On exit: stop recording → mp4 finalised → exit Playwright → stop MLX profile
+
+    Example:
+        from pathlib import Path
+        from lib.multilogin import browser_session
+
+        with browser_session(config, account_dir, session_id=sid) as (mlx, profile_id, page):
+            page.goto("https://www.reddit.com/")
+            # ... all warmup work here ...
+        # mp4 is on disk, profile is stopped
+    """
+    from pathlib import Path as _Path
+    from playwright.sync_api import sync_playwright
+    from lib import recording
+
+    account_dir = _Path(account_dir)
+    recordings_dir = account_dir / "recordings"
+
+    with session(config) as (mlx, pid, port):
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            ctx = browser.contexts[0]
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            with recording.record_session(page, recordings_dir, session_id=session_id):
+                yield mlx, pid, page
+            # exit Playwright `with` naturally — DO NOT call browser.close()
