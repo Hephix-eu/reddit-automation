@@ -396,8 +396,9 @@ For each comment your plan calls for:
        page=page,           # live Playwright page, already logged in
    )
    ```
-   This applies the mechanical dedupe + blacklist floor, POSTs via
-   `oauth.reddit.com/api/comment`, verifies the comment is visible, and
+   This applies the mechanical dedupe + blacklist floor, submits via the
+   real UI composer (mouse + `browse.human_type`), verifies the comment is
+   visible, and
    writes the correct Action row (`status=done`, `shadow_rejected`, or
    `skipped` with `reasoning='quality:<reason>'`). It returns `True` only
    when the comment was submitted AND verified visible to a re-fetch.
