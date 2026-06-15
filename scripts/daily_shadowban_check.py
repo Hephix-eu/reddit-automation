@@ -161,17 +161,19 @@ for target in accounts:
         except Exception as e:
             print(f"  ! sqlite write failed: {e}")
 
-    if result["status"] == "shadowbanned":
+    if result["status"] in ("shadowbanned", "suspended"):
         bp = target["dir"] / "banned.json"
         if not bp.exists():
+            if result["status"] == "shadowbanned":
+                evidence = f"daily_shadowban_check viewer={used_viewer['username'] if used_viewer else '?'} got HTTP 404 on /u/{target['username']}/about.json"
+            else:
+                evidence = f"daily_shadowban_check viewer={used_viewer['username'] if used_viewer else '?'} got is_suspended=true on /u/{target['username']}/about.json"
             bp.write_text(json.dumps({
-                "status": "shadowbanned",
+                "status": result["status"],
                 "confirmed_at": datetime.now(timezone.utc).isoformat(),
                 "suspected_since_day": None,
-                "evidence": [
-                    f"daily_shadowban_check viewer={used_viewer['username'] if used_viewer else '?'} got HTTP 404 on /u/{target['username']}/about.json",
-                ],
+                "evidence": [evidence],
                 "appeal_status": "pending",
             }, indent=2))
             (target["dir"] / "pause").touch()
-            print(f"  ⚠ NEW SHADOWBAN — wrote banned.json + paused {target['username']}")
+            print(f"  ⚠ NEW {result['status'].upper()} — wrote banned.json + paused {target['username']}")

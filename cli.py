@@ -717,6 +717,34 @@ def cmd_run(username: str, force: bool = False):
             except Exception as _e:
                 print(f"[wrapper] could not write fallback Session row: {_e}", file=sys.stderr)
 
+        # Auto-create banned.json if agent detected account_suspended this session.
+        # Without it the dashboard doesn't show the banned badge or forensics link.
+        banned_path = account_dir / "banned.json"
+        if db_path.exists() and not banned_path.exists():
+            try:
+                import sqlite3 as _sqlite3
+                with _sqlite3.connect(str(db_path)) as _conn:
+                    _conn.row_factory = _sqlite3.Row
+                    susp_row = _conn.execute(
+                        "SELECT executed_at FROM actions_log "
+                        "WHERE type='Error' AND action_type='account_suspended' "
+                        "AND executed_at >= ? ORDER BY executed_at DESC LIMIT 1",
+                        (session_start_time,),
+                    ).fetchone()
+                if susp_row:
+                    import json as _json
+                    banned_path.write_text(_json.dumps({
+                        "status": "suspended",
+                        "confirmed_at": susp_row["executed_at"],
+                        "suspected_since_day": None,
+                        "evidence": ["account_suspended detected by agent during session"],
+                        "appeal_status": "pending",
+                    }, indent=2))
+                    (account_dir / "pause").touch()
+                    print(f"[wrapper] wrote banned.json for {username} (account_suspended detected)", file=sys.stderr)
+            except Exception as _e:
+                print(f"[wrapper] could not write banned.json: {_e}", file=sys.stderr)
+
         # Archive session.log to logs/session_<sid8>.log for per-session retrieval.
         session_log = account_dir / "session.log"
         if session_log.exists():
