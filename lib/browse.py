@@ -96,6 +96,29 @@ def human_click(page, x: float, y: float, *,
     _last_mouse_pos = (x, y)
 
 
+def click_element(page, locator, *,
+                  rng: random.Random | None = None,
+                  button: str = "left") -> None:
+    """Move to a Playwright locator's center humanly, then click.
+
+    Falls back to locator.click() when bounding_box() returns None (element
+    is off-screen or inside a closed shadow root where geometry isn't exposed).
+    Use this for every deliberate UI click — upvotes, saves, subscribes, post
+    links, login buttons, submit — instead of bare locator.click().
+    """
+    box = locator.bounding_box()
+    if box:
+        human_click(
+            page,
+            box["x"] + box["width"] / 2,
+            box["y"] + box["height"] / 2,
+            rng=rng,
+            button=button,
+        )
+    else:
+        locator.click()
+
+
 def human_scroll(page, *, duration_s: float = 60.0,
                  rng: random.Random | None = None) -> dict:
     """Scroll the current page at humanlike rhythm for ~`duration_s` seconds.

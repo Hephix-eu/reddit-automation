@@ -118,10 +118,11 @@ else:
    username = os.environ["REDDIT_USERNAME"]
    password = os.environ["REDDIT_PASSWORD"]
 
+   from lib.browse import click_element
    # Open the login form — button text varies by locale, so fall back to
    # navigating directly to /login if the English-matched locator found nothing.
    if login_btn.count() > 0:
-       login_btn.first.click()
+       click_element(page, login_btn.first)
    else:
        page.goto("https://www.reddit.com/login", wait_until="domcontentloaded", timeout=20_000)
    time.sleep(random.uniform(1.5, 2.5))
@@ -129,8 +130,9 @@ else:
    # Username field
    for sel in ['input[name="username"]', 'input#login-username', 'input[autocomplete="username"]']:
        try:
-           if page.locator(sel).first.is_visible(timeout=2000):
-               page.click(sel)
+           loc = page.locator(sel).first
+           if loc.is_visible(timeout=2000):
+               click_element(page, loc)
                break
        except Exception:
            continue
@@ -143,8 +145,9 @@ else:
    for sel in ['input[name="password"]', 'input#login-password',
                'input[autocomplete="current-password"]', 'input[type="password"]']:
        try:
-           if page.locator(sel).first.is_visible(timeout=2000):
-               page.click(sel)
+           loc = page.locator(sel).first
+           if loc.is_visible(timeout=2000):
+               click_element(page, loc)
                break
        except Exception:
            continue
@@ -159,7 +162,7 @@ else:
        try:
            btn = page.locator(sel).first
            if btn.is_visible(timeout=2000):
-               btn.click()
+               click_element(page, btn)
                submitted = True
                break
        except Exception:
@@ -209,12 +212,16 @@ else:
 
 ### Humanlike browsing primitives
 
-Use `lib/browse.py` helpers for any scrolling/dwell:
+Use `lib/browse.py` helpers for any scrolling, dwelling, or clicking:
 
 - `human_scroll(page, duration_s=60)` — bursts of 3-7 wheel events with varied deltas, reading pauses, ~5% reverse scrolls. Returns telemetry dict for logging.
 - `dwell(seconds_min, seconds_max)` — short randomized pause between deliberate actions.
+- `click_element(page, locator)` — moves the cursor along a Bézier curve to the locator's center, micro-pauses, then clicks. **Use this for every deliberate UI click** (upvote, save, subscribe, post links, login buttons, submit). Falls back to `locator.click()` if bounding_box() is unavailable.
+- `human_click(page, x, y)` — same, but takes raw coordinates. Use when you already have coordinates (e.g. from a custom `bounding_box()` calculation).
 
 **Never write a `for _ in range(n): page.mouse.wheel(0, 800); time.sleep(1)` loop directly.** Constant deltas + constant sleeps produce a periodic scroll-velocity histogram that anti-bot can fingerprint. Always go through `human_scroll`.
+
+**Never use `locator.click()` or `page.click(sel)` for visible UI actions.** Those teleport the cursor with no movement — a clear automation signal. Always go through `click_element`.
 
 ### Session shape (humanlike rhythm)
 
@@ -305,14 +312,19 @@ Recording is best-effort — if ffmpeg crashes or CDP screencast fails, your ses
 
 ```python
 import re
+from lib.browse import click_element
+
 # Upvote — confirmed 8 matches on home feed
-page.get_by_role("button", name=re.compile("upvote", re.I))
+btn = page.get_by_role("button", name=re.compile("upvote", re.I)).first
+click_element(page, btn)
 
 # Join (subreddit page) — confirmed 1 match on r/dotnet
-page.get_by_role("button", name=re.compile("join", re.I))
+btn = page.get_by_role("button", name=re.compile("join", re.I)).first
+click_element(page, btn)
 
 # Save / comment / share — same pattern
-page.get_by_role("button", name=re.compile("save", re.I))
+btn = page.get_by_role("button", name=re.compile("save", re.I)).first
+click_element(page, btn)
 ```
 
 **Selectors that DO NOT work (don't waste a session retrying these):**
