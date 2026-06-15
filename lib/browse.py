@@ -22,8 +22,78 @@ timing — both very different from the naive "random big delta every 200ms"
 pattern.
 """
 
+import math
 import random
 import time
+
+# Persists last known cursor position across calls so moves don't teleport.
+_last_mouse_pos: tuple[float, float] | None = None
+
+
+def human_mouse_move(page, x: float, y: float, *,
+                     rng: random.Random | None = None) -> None:
+    """Move the cursor from the last known position to (x, y) along a curved path.
+
+    Uses a quadratic Bézier with a randomised control point so the trajectory
+    is never a straight line. Speed follows a smoothstep ease (slow → fast →
+    slow), matching how trackpad/mouse deceleration actually looks.
+    Updates the module-level position so the next call starts correctly.
+    """
+    global _last_mouse_pos
+    r = rng or random
+
+    if _last_mouse_pos is None:
+        # First call: start from a plausible resting spot mid-viewport.
+        sx = r.uniform(250, 700)
+        sy = r.uniform(200, 500)
+    else:
+        sx, sy = _last_mouse_pos
+
+    dist = math.hypot(x - sx, y - sy)
+    if dist < 2:
+        _last_mouse_pos = (x, y)
+        return
+
+    # Control point offset calibrated from recorded data: median curvature ratio
+    # (max lateral deviation / chord) = 0.085, p95 = 0.55. Control offset =
+    # 2 * curvature * chord, so ±25% of chord covers the typical range.
+    cx = (sx + x) / 2 + r.uniform(-min(dist * 0.25, 80), min(dist * 0.25, 80))
+    cy = (sy + y) / 2 + r.uniform(-min(dist * 0.20, 60), min(dist * 0.20, 60))
+
+    # Real data: median speed 1.14 px/ms, 17ms per event → ~19 px/step.
+    # dist/18 matches that; cap keeps extreme distances reasonable.
+    n_steps = max(6, min(40, int(dist / 18)))
+
+    for i in range(1, n_steps + 1):
+        t = i / n_steps
+        # Smoothstep: slow at start and end, fast in the middle.
+        te = t * t * (3 - 2 * t)
+        bx = (1 - te) ** 2 * sx + 2 * (1 - te) * te * cx + te ** 2 * x
+        by = (1 - te) ** 2 * sy + 2 * (1 - te) * te * cy + te ** 2 * y
+        # Per-step jitter: real recordings show ±2 px variance at this granularity.
+        bx += r.uniform(-2.0, 2.0)
+        by += r.uniform(-2.0, 2.0)
+        page.mouse.move(bx, by)
+        # Real inter-event median 17ms, p5–p95 range 10–21ms.
+        time.sleep(r.uniform(0.013, 0.020))
+
+    page.mouse.move(x, y)
+    _last_mouse_pos = (x, y)
+
+
+def human_click(page, x: float, y: float, *,
+                rng: random.Random | None = None,
+                button: str = "left") -> None:
+    """Move to (x, y) humanly, pause briefly, then click.
+
+    Prefer this over bare page.mouse.click() for any deliberate UI action.
+    """
+    global _last_mouse_pos
+    r = rng or random
+    human_mouse_move(page, x, y, rng=r)
+    time.sleep(r.uniform(0.04, 0.14))   # micro-pause before pressing
+    page.mouse.click(x, y, button=button)
+    _last_mouse_pos = (x, y)
 
 
 def human_scroll(page, *, duration_s: float = 60.0,
