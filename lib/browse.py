@@ -22,6 +22,7 @@ timing — both very different from the naive "random big delta every 200ms"
 pattern.
 """
 
+import bisect
 import math
 import random
 import time
@@ -193,6 +194,47 @@ def dwell(seconds_min: float = 0.4, seconds_max: float = 1.5,
     """A short randomized pause. Use between deliberate actions (clicks, navigations)."""
     r = rng or random
     time.sleep(r.uniform(seconds_min, seconds_max))
+
+
+# Inter-keydown flight-time distribution (ms), empirically derived from a real
+# 182-keystroke human capture (fixtures/keystroke_human_trace_001.json):
+# median 134, mean 167, heavy right tail to ~1.2 s for word/sentence pauses,
+# ~4% sub-70ms rollover bursts. Sampled via inverse-CDF so generated typing
+# matches human rhythm rather than a constant delay — the #1 tell of scripted
+# input. Validated end-to-end against a live Lexical editor through Multilogin
+# (scripts/spike_lexical_typing.py): replay median 164 / p90 302 vs 134 / 293.
+_FLIGHT_CDF: list[tuple[float, float]] = [
+    (0.00, 40), (0.05, 72), (0.10, 84), (0.25, 103), (0.50, 134),
+    (0.75, 182), (0.90, 293), (0.95, 384), (0.99, 543), (1.00, 1211),
+]
+_FLIGHT_PS = [p for p, _ in _FLIGHT_CDF]
+
+
+def _sample_flight_ms(r: random.Random) -> float:
+    """Draw one inter-key flight time (ms) from the empirical human CDF."""
+    u = r.random()
+    i = max(0, min(bisect.bisect_right(_FLIGHT_PS, u) - 1, len(_FLIGHT_CDF) - 2))
+    (p0, m0), (p1, m1) = _FLIGHT_CDF[i], _FLIGHT_CDF[i + 1]
+    return m0 + (m1 - m0) * ((u - p0) / (p1 - p0)) if p1 > p0 else m0
+
+
+def human_type(page, text: str, *, rng: random.Random | None = None) -> None:
+    """Type `text` into the currently-focused element one char at a time, over
+    CDP, pacing inter-key flight time by inverse-CDF sampling from a real human
+    keystroke trace (see _FLIGHT_CDF).
+
+    The CALLER must focus the target first (e.g. browse.click_element on the
+    editor / input). The browser emits the trusted keydown → beforeinput →
+    input → keyup chain itself; we only shape the timing. Use this for EVERY
+    text entry (comment body, login fields) instead of inline
+    `page.keyboard.type` loops, so human timing has a single source of truth.
+    """
+    r = rng or random.Random()
+    last = len(text) - 1
+    for i, ch in enumerate(text):
+        page.keyboard.type(ch)
+        if i < last:
+            time.sleep(_sample_flight_ms(r) / 1000.0)
 
 
 def dismiss_cookie_popup(page, *, rng: random.Random | None = None) -> bool:

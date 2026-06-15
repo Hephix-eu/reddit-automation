@@ -118,7 +118,7 @@ else:
    username = os.environ["REDDIT_USERNAME"]
    password = os.environ["REDDIT_PASSWORD"]
 
-   from lib.browse import click_element
+   from lib.browse import click_element, human_type
    # Open the login form — button text varies by locale, so fall back to
    # navigating directly to /login if the English-matched locator found nothing.
    if login_btn.count() > 0:
@@ -137,8 +137,7 @@ else:
        except Exception:
            continue
    time.sleep(random.uniform(0.4, 0.8))
-   for ch in username:
-       page.keyboard.type(ch, delay=random.uniform(80, 150))
+   human_type(page, username)   # human-paced keystrokes (lib.browse, single source of truth)
    time.sleep(random.uniform(0.5, 1.0))
 
    # Password field
@@ -152,8 +151,7 @@ else:
        except Exception:
            continue
    time.sleep(random.uniform(0.3, 0.6))
-   for ch in password:
-       page.keyboard.type(ch, delay=random.uniform(80, 150))
+   human_type(page, password)
    time.sleep(random.uniform(0.8, 1.2))
 
    # Submit

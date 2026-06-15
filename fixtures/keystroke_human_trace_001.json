@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "captured": "2026-06-15",
+    "source": "human DevTools capture via krStop() recorder",
+    "target_element": "textarea",
+    "note": "Real human typing a ~180-char comment-length sample, incl. natural pauses and 5 backspace corrections. Used to derive the empirical timing model for lib/keystroke replay."
+  },
+  "stats": {
+    "events": 727,
+    "keystrokes": 182,
+    "duration_ms": 34666,
+    "interkey_mean_ms": 167,
+    "interkey_median_ms": 134,
+    "interkey_min_ms": 40,
+    "interkey_max_ms": 1211,
+    "interkey_stdev_ms": 123
+  },
+  "event_chain": {
+    "note": "Per real keystroke the BROWSER emits this chain automatically; isTrusted=true on all. A CDP key (Playwright keyboard.type) reproduces it identically — we do NOT synthesize beforeinput/input.",
+    "insert": ["keydown", "beforeinput(insertText,data=char)", "input(insertText,data=char)", "keyup"],
+    "delete": ["keydown(Backspace)", "beforeinput(deleteContentBackward)", "input(deleteContentBackward)", "keyup"],
+    "beforeinput_after_keydown_ms": "~1-2",
+    "correction_rate": "5 backspaces / 182 keys ≈ 2.7%"
+  },
+  "flight_model_ms": {
+    "_desc": "Empirical inter-keydown (flight time) distribution. Use inverse-CDF sampling: draw u in [0,1], piecewise-linear interpolate. ~7% of gaps are >350ms (word/sentence pauses), ~4% are <70ms (rollover bursts).",
+    "cdf": [[0.0,40],[0.05,72],[0.10,84],[0.25,103],[0.50,134],[0.75,182],[0.90,293],[0.95,384],[0.99,543],[1.0,1211]]
+  }
+}
