@@ -216,10 +216,13 @@ Use `lib/browse.py` helpers for any scrolling, dwelling, or clicking:
 - `dwell(seconds_min, seconds_max)` — short randomized pause between deliberate actions.
 - `click_element(page, locator)` — moves the cursor along a Bézier curve to the locator's center, micro-pauses, then clicks. **Use this for every deliberate UI click** (upvote, save, subscribe, post links, login buttons, submit). Falls back to `locator.click()` if bounding_box() is unavailable.
 - `human_click(page, x, y)` — same, but takes raw coordinates. Use when you already have coordinates (e.g. from a custom `bounding_box()` calculation).
+- `human_type(page, text)` — type into the currently-focused element with human-paced keystrokes (inter-key flight time sampled from a real human capture; CDP keys produce the trusted keydown→beforeinput→input chain). **Focus the field/editor first** (e.g. `click_element`), then call this. Use for **every** text entry — login fields, comment/post body.
 
 **Never write a `for _ in range(n): page.mouse.wheel(0, 800); time.sleep(1)` loop directly.** Constant deltas + constant sleeps produce a periodic scroll-velocity histogram that anti-bot can fingerprint. Always go through `human_scroll`.
 
 **Never use `locator.click()` or `page.click(sel)` for visible UI actions.** Those teleport the cursor with no movement — a clear automation signal. Always go through `click_element`.
+
+**Never type with an inline `for ch in text: page.keyboard.type(ch, delay=...)` loop.** A constant per-key delay is a classic scripted-input tell. Always go through `human_type`, which samples inter-key timing from a real human distribution.
 
 ### Session shape (humanlike rhythm)
 
@@ -280,7 +283,7 @@ Long comments from a brand-new account are a stronger bot signal than rate. A 3-
 
 **Mixed-action requirement.** In the first 7 days you MUST do both: comment AND post. Accounts that only comment (or only post) earlier score higher on Reddit's bot heuristics. Day 5 of the plan reserves the first text post — don't skip it.
 
-**Comment submission via OAuth API only** (not the DOM composer). Use `scripts/oauth_comment.py` style: extract `token_v2` cookie, POST to `oauth.reddit.com/api/comment` with `Authorization: Bearer <token>` + real UA from `navigator.userAgent`. Verify via re-fetching the thread JSON; if comment not visible to OTHER accounts, log as `shadow_rejected` not `done`.
+**Comment submission goes through one chokepoint — never roll your own.** Do NOT build your own comment POST, and do NOT type a comment into the DOM ad hoc. Always call `lib.comment_submit.submit_comment(...)` (see "Comment authoring" below); it owns submission, visibility verification (`shadow_rejected` vs `done`), and logging. The submission mechanism is moving from the (broken) OAuth API path to real human UI typing via `lib.browse.human_type` + `click_element` — but the agent's contract is unchanged either way: just call the chokepoint.
 
 ---
 
