@@ -55,11 +55,16 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "agent image '$IMAGE' mi
 docker ps --filter "name=$MLX_CONTAINER" --filter status=running --format '{{.Names}}' | grep -q . \
   || { echo "multilogin container '$MLX_CONTAINER' not running" >&2; exit 1; }
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)_$$"   # _$$ keeps name/log unique on same-second launches
 LOGDIR="$REPO/accounts/$ACCOUNT/agent_runs"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/$STAMP.log"
 NAME="agent_oneoff_${ACCOUNT}_${STAMP}"
+
+# On SIGTERM/SIGINT (e.g. the dashboard "stop" button) tear down the container —
+# otherwise killing this wrapper leaves `docker run` going to TIMEOUT_SEC.
+cleanup() { trap - TERM INT; docker stop "$NAME" >/dev/null 2>&1 || true; exit 143; }
+trap cleanup TERM INT
 
 APPEND=""
 [[ "$APPEND_WARMUP" == "1" ]] && APPEND="--append-system-prompt-file AGENT_PROMPT.md"
