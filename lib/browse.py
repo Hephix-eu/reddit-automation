@@ -114,30 +114,46 @@ def navigate_to_subreddit(page, sub_name: str, *,
 
     Returns True if the search-bar path succeeded, False if it fell back to goto.
     """
-    import re as _re
     r = rng or random
     sub_clean = sub_name.lstrip("r/").strip("/")
 
     try:
-        # Shreddit uses a combobox role on its search element; classic Reddit
-        # uses a plain text input with name="q". Both match get_by_role("combobox").
-        # Fall back to a placeholder-text search if that returns nothing.
-        bar = page.get_by_role("combobox").first
-        if not bar.count() or not bar.is_visible(timeout=3_000):
-            bar = page.get_by_placeholder(_re.compile(r"search", _re.I)).first
-        if not bar.count() or not bar.is_visible(timeout=2_000):
+        # Shreddit renders search inside a `reddit-search-large` custom element
+        # with an open shadow root. The outer host has a real bounding box so
+        # click_element moves the cursor there; clicking it focuses the inner
+        # input (which lives in the shadow root and can't be queried directly).
+        host = page.locator("reddit-search-large").first
+        if not host.count() or not host.is_visible(timeout=3_000):
             raise RuntimeError("search bar not found")
 
-        click_element(page, bar, rng=r)
-        dwell(0.2, 0.5, rng=r)
+        click_element(page, host, rng=r)
+        dwell(0.3, 0.6, rng=r)
 
-        # Select any existing content and overwrite with our query
+        # On subreddit pages the search bar opens in subreddit-scoped mode with a
+        # chip showing the current sub and a close button to go back to global search.
+        # Click it before typing so the autocomplete shows global subreddit results.
+        remove_filter = page.locator("reddit-search-large #search-input-remove-filter").first
+        if remove_filter.count() and remove_filter.is_visible(timeout=1_000):
+            click_element(page, remove_filter, rng=r)
+            dwell(0.2, 0.4, rng=r)
+
+        # Keyboard events go to the now-focused shadow-root input
         page.keyboard.press("Control+a")
         human_type(page, f"r/{sub_clean}", rng=r)
         dwell(0.9, 1.8, rng=r)   # wait for autocomplete dropdown
 
-        # Click the first autocomplete option whose text matches the sub name
-        suggestion = page.get_by_role("option", name=_re.compile(sub_clean, _re.I)).first
+        # Playwright pierces open shadow roots for CSS attribute selectors.
+        # Autocomplete links have href="/r/<Sub>/" (relative) or absolute URL —
+        # match the suffix. Fall back to text-content match if href doesn't match
+        # (observed when typing from a subreddit page vs. the homepage).
+        suggestion = page.locator(
+            f"reddit-search-large a[href$='/r/{sub_clean}/']"
+        ).first
+        if not suggestion.count():
+            import re as _re
+            suggestion = page.locator("reddit-search-large a").filter(
+                has_text=_re.compile(r"^r/" + _re.escape(sub_clean), _re.I)
+            ).first
         if suggestion.count() and suggestion.is_visible(timeout=3_000):
             click_element(page, suggestion, rng=r)
             page.wait_for_load_state("domcontentloaded", timeout=20_000)
