@@ -212,6 +212,7 @@ else:
 
 Use `lib/browse.py` helpers for any scrolling, dwelling, or clicking:
 
+- `navigate_to_subreddit(page, "r/CasualConversation")` — types the sub name into Reddit's search bar, waits for autocomplete, clicks the suggestion. Falls back to direct URL if search fails. Use this for every sub-to-sub transition during browsing; never call `page.goto("https://reddit.com/r/...")` directly for browsing navigation.
 - `human_scroll(page, duration_s=60)` — bursts of 3-7 wheel events with varied deltas, reading pauses, ~5% reverse scrolls. Returns telemetry dict for logging.
 - `dwell(seconds_min, seconds_max)` — short randomized pause between deliberate actions.
 - `click_element(page, locator)` — moves the cursor along a Bézier curve to the locator's center, micro-pauses, then clicks. **Use this for every deliberate UI click** (upvote, save, subscribe, post links, login buttons, submit). Falls back to `locator.click()` if bounding_box() is unavailable.
@@ -233,7 +234,12 @@ Use `lib/browse.py` helpers for any scrolling, dwelling, or clicking:
 ```
 1. Land on reddit.com (or old.reddit.com if config.reddit.use_old_reddit). Scroll the home feed for 90-150s, reading post titles.
 2. Click into 1-2 posts that look interesting. Read each fully (dwell 30-90s). Scroll comments. Maybe upvote post or a top comment if genuinely good.
-3. Backtrack. Drift to a sidebar-suggested sub or one of your subscribed subs (config.reddit.secondary_subs). Scroll for 90-150s.
+3. Backtrack. Drift to a subreddit from config.reddit.general_subs / anchor_sub. Navigate using the search bar — type the sub name, pick the autocomplete suggestion:
+   ```python
+   from lib.browse import navigate_to_subreddit
+   navigate_to_subreddit(page, "r/CasualConversation")
+   ```
+   Falls back to direct URL automatically if search fails. Scroll for 90-150s.
 4. Repeat steps 2-3 across different subs until time.time() - browse_start >= target_browse_seconds.
    Check remaining time before each new sub: if < 60s left, skip to step 5.
    Never stop browsing early just because you've visited 2-3 subs — keep going until the time target is reached.

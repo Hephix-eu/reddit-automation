@@ -103,6 +103,59 @@ def get_cursor_pos() -> tuple[float, float] | None:
     return _last_mouse_pos
 
 
+def navigate_to_subreddit(page, sub_name: str, *,
+                          rng: random.Random | None = None) -> bool:
+    """Navigate to a subreddit via the Reddit search bar (humanlike).
+
+    Types 'r/<sub>' into the search box, waits for the autocomplete suggestion,
+    clicks it. Falls back to a direct page.goto if the search bar isn't found
+    or no autocomplete match appears within 3 s — so callers never need to
+    handle failures.
+
+    Returns True if the search-bar path succeeded, False if it fell back to goto.
+    """
+    import re as _re
+    r = rng or random
+    sub_clean = sub_name.lstrip("r/").strip("/")
+
+    try:
+        # Shreddit uses a combobox role on its search element; classic Reddit
+        # uses a plain text input with name="q". Both match get_by_role("combobox").
+        # Fall back to a placeholder-text search if that returns nothing.
+        bar = page.get_by_role("combobox").first
+        if not bar.count() or not bar.is_visible(timeout=3_000):
+            bar = page.get_by_placeholder(_re.compile(r"search", _re.I)).first
+        if not bar.count() or not bar.is_visible(timeout=2_000):
+            raise RuntimeError("search bar not found")
+
+        click_element(page, bar, rng=r)
+        dwell(0.2, 0.5, rng=r)
+
+        # Select any existing content and overwrite with our query
+        page.keyboard.press("Control+a")
+        human_type(page, f"r/{sub_clean}", rng=r)
+        dwell(0.9, 1.8, rng=r)   # wait for autocomplete dropdown
+
+        # Click the first autocomplete option whose text matches the sub name
+        suggestion = page.get_by_role("option", name=_re.compile(sub_clean, _re.I)).first
+        if suggestion.count() and suggestion.is_visible(timeout=3_000):
+            click_element(page, suggestion, rng=r)
+            page.wait_for_load_state("domcontentloaded", timeout=20_000)
+            return True
+
+        # Autocomplete didn't show a match — dismiss and fall back
+        page.keyboard.press("Escape")
+        raise RuntimeError("no autocomplete suggestion")
+
+    except Exception:
+        page.goto(
+            f"https://www.reddit.com/r/{sub_clean}/",
+            wait_until="domcontentloaded",
+            timeout=20_000,
+        )
+        return False
+
+
 def click_element(page, locator, *,
                   rng: random.Random | None = None,
                   button: str = "left") -> None:
