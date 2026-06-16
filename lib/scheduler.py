@@ -34,7 +34,7 @@ def in_container() -> bool:
     return Path("/.dockerenv").exists() or os.environ.get("RUNNING_IN_CONTAINER") == "1"
 
 
-def schedule_next_run(username: str, when: datetime, cli_path: Path,
+def schedule_next_run(username: str, when: datetime, cli_path: Path | None = None,
                       python_exe: str | None = None,
                       account_dir: Path | None = None,
                       reason: str = "scheduled") -> None:
@@ -42,7 +42,13 @@ def schedule_next_run(username: str, when: datetime, cli_path: Path,
 
     Inside a container → writes next_run.json (host cron handles firing).
     Otherwise → native scheduler (systemd-run / schtasks).
+
+    `cli_path` defaults to this repo's cli.py (derived from the module location)
+    so the autonomous agent can call schedule_next_run(user, when) without having
+    to know/pass it — a missing cli_path used to crash the session.
     """
+    if cli_path is None:
+        cli_path = Path(__file__).resolve().parent.parent / "cli.py"
     python_exe = python_exe or sys.executable
     if in_container():
         if account_dir is None:
