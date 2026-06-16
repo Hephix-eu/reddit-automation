@@ -180,31 +180,31 @@ def click_element(page, locator, *,
                   button: str = "left") -> None:
     """Move to a Playwright locator's center humanly, then click.
 
-    If the element exists but is scrolled out of the viewport, scrolls it
-    into view first so the subsequent human_mouse_move is visible on screen.
-    Falls back to locator.click() only when the element truly has no geometry
-    (e.g. display:none or inside a closed shadow root).
+    If the element is scrolled out of the viewport, scrolls humanly to reach
+    it (scroll_to_top for above, human_scroll for below) before moving the
+    cursor — so the scroll and click are both visible in the recording.
+    Falls back to locator.click() only when the element truly has no geometry.
     """
     import sys as _sys
+    r = rng or random
 
     box = locator.bounding_box()
 
-    # Scroll into view if the element is off-screen (box outside viewport) or
-    # not yet rendered (box is None — some elements only get a layout box after
-    # being scrolled into the render viewport).
     try:
         vp = page.viewport_size or {"width": 1280, "height": 720}
-        vp_w, vp_h = vp["width"], vp["height"]
-        off_screen = (
-            box is None
-            or box["x"] + box["width"]  < 0
-            or box["y"] + box["height"] < 0
-            or box["x"] > vp_w
-            or box["y"] > vp_h
-        )
-        if off_screen:
-            locator.scroll_into_view_if_needed(timeout=3_000)
-            time.sleep(0.25)
+        vp_h = vp["height"]
+
+        if box is not None and box["y"] + box["height"] < 0:
+            # Element is above the viewport — scroll up humanly.
+            scroll_to_top(page, rng=r)
+            time.sleep(0.3)
+            box = locator.bounding_box()
+        elif box is not None and box["y"] > vp_h:
+            # Element is below the viewport — scroll down humanly.
+            # ~1 s per 300 px of distance, clamped to a reasonable range.
+            dist = box["y"] - vp_h
+            human_scroll(page, duration_s=max(1.5, min(dist / 300, 6.0)), rng=r)
+            time.sleep(0.2)
             box = locator.bounding_box()
     except Exception:
         pass
@@ -214,11 +214,11 @@ def click_element(page, locator, *,
             page,
             box["x"] + box["width"] / 2,
             box["y"] + box["height"] / 2,
-            rng=rng,
+            rng=r,
             button=button,
         )
     else:
-        print("[click_element] WARNING: bounding_box() is None after scroll_into_view — falling back to locator.click()", file=_sys.stderr)
+        print("[click_element] WARNING: bounding_box() is None — falling back to locator.click()", file=_sys.stderr)
         locator.click()
 
 
