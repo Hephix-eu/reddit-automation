@@ -78,7 +78,19 @@ check_stale_accounts() {
         local user
         user=$(basename "$d")
         [[ -f "$d/config.json" ]] || continue
-        [[ -f "$d/pause" ]] && continue    # respect pause flag
+        [[ -f "$d/pause" ]] && continue        # respect pause flag
+        [[ -f "$d/banned.json" ]] && continue  # terminal: shadowbanned/suspended
+        # A healthy, active account ALWAYS has a future next_run_utc. When it's
+        # null the account is either graduated (warmup_complete) or terminated
+        # (account_suspended/TERMINAL) — nothing is scheduled, so a "stale"
+        # alert is a false positive. This was the source of the stale_* noise
+        # for salty_crow33/swift_viper14 (graduated) and idlebroth25/weirdlizard92
+        # (terminated in-session, which never writes banned.json or pause).
+        if [[ -f "$d/next_run.json" ]]; then
+            local nru
+            nru=$(grep -oE '"next_run_utc"[[:space:]]*:[[:space:]]*[^,}]+' "$d/next_run.json" | head -1)
+            [[ "$nru" == *null* ]] && continue
+        fi
         local db="$d/state.db"
         [[ -f "$db" ]] || continue
         local last

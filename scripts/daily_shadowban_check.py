@@ -61,6 +61,75 @@ def force_unlock(profile_id):
         return False
 
 
+def telegram(text):
+    """Best-effort Telegram push. Needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in
+    env — passed into this container via `--env-file /etc/reddit-agent.env` in
+    the cron entry (the mounted workspace .env does NOT carry them)."""
+    tok = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat = os.environ.get("TELEGRAM_CHAT_ID")
+    if not tok or not chat:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{tok}/sendMessage",
+            data={"chat_id": chat, "text": text, "disable_web_page_preview": True},
+            timeout=10,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _norm(s):
+    return " ".join((s or "").split()).lower()
+
+
+def reconcile_comments(target, result):
+    """Cross-account comment verification. `result['visible_comments']` is what
+    a DIFFERENT account can actually see on the target's profile. Promote any
+    state.db comment row still at status='done' (same-session-confirmed only)
+    to 'verified_external' when its text shows up in that public list, and
+    return the newly-verified rows so the caller can announce them.
+
+    Idempotent by construction: the status flip out of 'done' means each comment
+    is announced exactly once, no matter how often the check runs.
+    """
+    vis = result.get("visible_comments") or []
+    db = target["state_db"]
+    if not vis or not db.exists():
+        return []
+    vis_norm = [(_norm(v.get("body")), v) for v in vis]
+    newly = []
+    try:
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, submitted_content, subreddit, target_url FROM actions_log "
+            "WHERE type='Action' AND action_type='comment' AND status='done'"
+        ).fetchall()
+        for row in rows:
+            needle = _norm(row["submitted_content"])[:40]
+            if not needle:
+                continue
+            match = next((v for b, v in vis_norm if needle in b), None)
+            if not match:
+                continue
+            url = ("https://www.reddit.com" + match["permalink"]) if match.get("permalink") else row["target_url"]
+            conn.execute(
+                "UPDATE actions_log SET status='verified_external', result=? WHERE id=?",
+                (url, row["id"]),
+            )
+            newly.append({
+                "subreddit": match.get("subreddit") or row["subreddit"],
+                "url": url,
+                "score": match.get("score"),
+            })
+        conn.commit(); conn.close()
+    except Exception as e:
+        print(f"  ! reconcile_comments failed: {e}")
+    return newly
+
+
 def check_with_fallback(target, viewers):
     """Try check() against `target` using each viewer until one works.
     On LOCK_PROFILE_ERROR, auto-unlock and retry once with same viewer first.
@@ -160,6 +229,20 @@ for target in accounts:
             conn.commit(); conn.close()
         except Exception as e:
             print(f"  ! sqlite write failed: {e}")
+
+    # Cross-account comment-existence verification. Only meaningful when the
+    # profile is visible to others (healthy). Promotes same-session-confirmed
+    # comments to verified_external and fires ONE success message per comment.
+    if result["status"] == "healthy":
+        newly = reconcile_comments(target, result)
+        karma = (result.get("raw") or {}).get("comment_karma")
+        for nc in newly:
+            telegram(
+                f"✅ [hephix] {target['username']}: comment now VISIBLE to other "
+                f"users in r/{nc['subreddit']} (score {nc.get('score')}, "
+                f"comment_karma={karma}).\n{nc['url']}"
+            )
+            print(f"  ✅ verified_external in r/{nc['subreddit']} — {nc['url']}")
 
     if result["status"] in ("shadowbanned", "suspended"):
         bp = target["dir"] / "banned.json"

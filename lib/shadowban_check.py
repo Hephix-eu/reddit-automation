@@ -67,6 +67,37 @@ def check(target_username: str, viewer_pid: str, mlx_client) -> dict:
                 result["raw"]["body_preview"] = body[:200]
                 # 403/HTML page = CDN/cloudflare block, not account-level signal
                 result["status"] = "unknown"
+
+            # While the viewer session is already up, also capture the target's
+            # PUBLICLY VISIBLE comments. This is the only authoritative way to
+            # know whether a comment we posted is visible to OTHERS — the posting
+            # account always sees its own comments, even shadow-rejected ones.
+            # Additive + best-effort: a failure here never changes ban status.
+            if result["status"] == "healthy":
+                try:
+                    cr = page.request.get(
+                        f"https://www.reddit.com/user/{target_username}/comments.json?limit=100",
+                        timeout=15000,
+                    )
+                    if cr.status == 200 and cr.text().lstrip().startswith("{"):
+                        kids = (cr.json().get("data") or {}).get("children", [])
+                        vis = []
+                        for k in kids:
+                            cd = k.get("data") or {}
+                            vis.append({
+                                "id": cd.get("name") or cd.get("id"),
+                                "body": (cd.get("body") or "")[:300],
+                                "permalink": cd.get("permalink"),
+                                "subreddit": cd.get("subreddit"),
+                                "score": cd.get("score"),
+                                "created_utc": cd.get("created_utc"),
+                            })
+                        result["visible_comments"] = vis
+                        result["raw"]["visible_comment_count"] = len(vis)
+                    else:
+                        result["raw"]["comments_http"] = cr.status
+                except Exception as e:
+                    result["raw"]["comments_error"] = f"{type(e).__name__}: {e}"
     except Exception as e:
         result["raw"]["error"] = f"{type(e).__name__}: {e}"
     finally:
