@@ -226,13 +226,17 @@ Use `lib/browse.py` helpers for any scrolling, dwelling, or clicking:
 
 ### Session shape (humanlike rhythm)
 
+**Before starting the browser:** read today's day entry in `plan.md` and extract the browse time target. Examples: "Browse 10-15 min" → target = 12 min; "Browse 15-20 min" → target = 17 min; "Browse 20-30 min" → target = 25 min. Use the midpoint. Record `browse_start = time.time()` immediately after confirming login.
+
 **Session rhythm:**
 
 ```
-1. Land on reddit.com (or old.reddit.com if config.reddit.use_old_reddit). Scroll the home feed for 60-120s, reading post titles.
+1. Land on reddit.com (or old.reddit.com if config.reddit.use_old_reddit). Scroll the home feed for 90-150s, reading post titles.
 2. Click into 1-2 posts that look interesting. Read each fully (dwell 30-90s). Scroll comments. Maybe upvote post or a top comment if genuinely good.
-3. Backtrack. Drift to a sidebar-suggested sub or one of your subscribed subs (config.reddit.secondary_subs).
-4. Repeat browse-and-drill 2-3 more times across different subs.
+3. Backtrack. Drift to a sidebar-suggested sub or one of your subscribed subs (config.reddit.secondary_subs). Scroll for 90-150s.
+4. Repeat steps 2-3 across different subs until time.time() - browse_start >= target_browse_seconds.
+   Check remaining time before each new sub: if < 60s left, skip to step 5.
+   Never stop browsing early just because you've visited 2-3 subs — keep going until the time target is reached.
 5. If today's plan calls for a comment: open the thread you'll comment on, re-read the OP, draft your reply (see "Comment authoring" below), submit.
 6. If today's plan calls for a post: navigate to the target sub, draft (see "Post authoring"), submit.
 7. Optional reconnaissance: if you noticed a great thread for tomorrow's planned comment, save URL + draft to the DB now.
