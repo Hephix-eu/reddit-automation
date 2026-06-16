@@ -760,6 +760,50 @@ def cmd_run(username: str, force: bool = False):
             except Exception as _e:
                 print(f"[wrapper] could not archive session.log: {_e}", file=sys.stderr)
 
+        # Merge multi-segment recordings into one mp4 (best-effort).
+        # Sessions with two browser_session phases (browse → generate → submit)
+        # produce two separate files; ffmpeg concat stitches them so the
+        # dashboard always has one video per session.
+        try:
+            from lib.db import latest_session as _latest_session
+            _latest = _latest_session(db_path) if db_path.exists() else None
+            _sid8 = ((_latest or {}).get("session_id") or "")[:8]
+            if _sid8:
+                _rdir = account_dir / "recordings"
+                _segments = sorted(_rdir.glob(f"*_{_sid8}.mp4")) if _rdir.exists() else []
+                if len(_segments) >= 2:
+                    _merged_tmp = _rdir / f"merged_{_sid8}_tmp.mp4"
+                    _list_file = _rdir / f"concat_{_sid8}.txt"
+                    _list_file.write_text(
+                        "\n".join(f"file '{p}'" for p in _segments)
+                    )
+                    _merge_proc = subprocess.run(
+                        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                         "-i", str(_list_file),
+                         "-c", "copy", "-loglevel", "error",
+                         str(_merged_tmp)],
+                        capture_output=True,
+                    )
+                    _list_file.unlink(missing_ok=True)
+                    if _merge_proc.returncode == 0:
+                        _final_name = _segments[0]
+                        for _seg in _segments:
+                            _seg.unlink(missing_ok=True)
+                        _merged_tmp.rename(_final_name)
+                        print(
+                            f"[wrapper] merged {len(_segments)} recording segments → {_final_name.name}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        _merged_tmp.unlink(missing_ok=True)
+                        print(
+                            f"[wrapper] recording merge failed (rc={_merge_proc.returncode}): "
+                            f"{_merge_proc.stderr.decode()[:200]}",
+                            file=sys.stderr,
+                        )
+        except Exception as _e:
+            print(f"[wrapper] could not merge recordings: {_e}", file=sys.stderr)
+
         # 3. Mirror SQLite truth to MLX profile notes (best-effort).
         # SQLite is authoritative; this just keeps the cross-machine snapshot fresh.
         _persist_state_to_mlx(account_dir)
