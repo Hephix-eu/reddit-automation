@@ -76,6 +76,9 @@ def human_mouse_move(page, x: float, y: float, *,
         bx += r.uniform(-2.0, 2.0)
         by += r.uniform(-2.0, 2.0)
         page.mouse.move(bx, by)
+        # Update after every step so the recording sender thread sees the cursor
+        # moving in real-time rather than jumping at the end of the move.
+        _last_mouse_pos = (bx, by)
         # Real inter-event median 17ms, p5–p95 range 10–21ms.
         time.sleep(r.uniform(0.013, 0.020))
 
@@ -182,6 +185,7 @@ def click_element(page, locator, *,
     Use this for every deliberate UI click — upvotes, saves, subscribes, post
     links, login buttons, submit — instead of bare locator.click().
     """
+    import sys as _sys
     box = locator.bounding_box()
     if box:
         human_click(
@@ -192,6 +196,7 @@ def click_element(page, locator, *,
             button=button,
         )
     else:
+        print(f"[click_element] WARNING: bounding_box() returned None — falling back to locator.click() (no mouse movement)", file=_sys.stderr)
         locator.click()
 
 
@@ -257,6 +262,31 @@ def human_scroll(page, *, duration_s: float = 60.0,
         "distance_px": distance,
         "duration_s": round(duration_s, 1),
     }
+
+
+def scroll_to_top(page, *, rng: random.Random | None = None) -> None:
+    """Scroll rapidly back to the page top using human-patterned upward wheel bursts.
+
+    Mirrors the rhythm of human_scroll but in the upward direction — bell-curve
+    momentum, ~17 ms inter-event timing, short pauses between bursts — so the
+    motion looks natural rather than a single large instant jump.
+    """
+    r = rng or random
+    for _ in range(4):
+        peak = r.randint(100, 220)
+        n_events = r.randint(18, 40)
+        for i in range(n_events):
+            t = i / n_events
+            if t < 0.25:
+                env = t / 0.25
+            elif t < 0.55:
+                env = 1.0
+            else:
+                env = (1.0 - t) / 0.45
+            delta = -max(1, int(peak * env * r.uniform(0.75, 1.25)))
+            page.mouse.wheel(0, delta)
+            time.sleep(r.uniform(0.013, 0.020))
+        time.sleep(r.uniform(0.10, 0.35))
 
 
 def dwell(seconds_min: float = 0.4, seconds_max: float = 1.5,

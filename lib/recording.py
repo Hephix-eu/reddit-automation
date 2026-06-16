@@ -1,23 +1,23 @@
 """Session video recording via CDP screencast → ffmpeg → mp4.
 
-Captures JPEG frames at ~6 fps from a CDP-connected Playwright page and pipes
-them to ffmpeg, producing a single mp4 per session. One file per session in
-`accounts/<user>/recordings/<utc-timestamp>_<sid8>.mp4`.
-
-Rotation handled by /etc/cron.d/reddit-recordings-cleanup (7-day default).
+Architecture (revised):
+  - CDP screencast callback stores the latest JPEG in a shared slot.
+  - A background sender thread fires at a fixed fps, reads the latest JPEG,
+    overlays the cursor at the current _last_mouse_pos, and pipes to ffmpeg.
+  - This decouples cursor-overlay frame rate from Chrome's repaint rate.
+    Chrome only repaints when content changes; cursor movement rarely causes
+    repaints, so without the sender thread cursor moves appear to teleport.
 
 Usage:
     from lib import recording
     with recording.record_session(page, account_dir / "recordings", session_id=sid) as video_path:
         # ... do warmup work ...
-        # mp4 closes when the with-block exits
-
-Failures are swallowed — recording is best-effort, never crashes the session.
 """
 import base64
 import io
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -26,13 +26,7 @@ from typing import Optional
 
 
 def _draw_cursor_on_frame(jpeg_bytes: bytes, px: float, py: float) -> bytes:
-    """Overlay the cursor.in arrow cursor at pixel position (px, py) on a JPEG frame.
-
-    Best-effort — returns original bytes unchanged if PIL is unavailable or
-    anything fails. Reconstructs the four-layer SVG from cursor.in/assets/cursor.svg
-    (viewBox 0 0 28 28) scaled to S=1.5. Hotspot is at the arrow tip (8.2, 4.9)
-    in SVG coordinates.
-    """
+    """Overlay the cursor.in arrow cursor at pixel position (px, py) on a JPEG frame."""
     try:
         from PIL import Image, ImageDraw
         img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGBA")
@@ -40,13 +34,13 @@ def _draw_cursor_on_frame(jpeg_bytes: bytes, px: float, py: float) -> bytes:
         d = ImageDraw.Draw(overlay)
 
         ix, iy = int(round(px)), int(round(py))
-        S = 1.5          # px per SVG unit; cursor is ~17×27 px at this scale
-        hx, hy = 8.2, 4.9  # hotspot in SVG coords (tip of arrow)
+        S = 1.5
+        hx, hy = 8.2, 4.9
 
         def poly(*coords):
             return [(ix + (x - hx) * S, iy + (y - hy) * S) for x, y in coords]
 
-        # Layer 1 — white arrow body (forms white outline around the black body)
+        # Layer 1 — white arrow body (outline)
         d.polygon(poly(
             (8.2, 20.9), (8.2, 4.9), (19.8, 16.5), (13.0, 16.5), (12.6, 16.6),
         ), fill=(255, 255, 255, 255))
@@ -56,14 +50,12 @@ def _draw_cursor_on_frame(jpeg_bytes: bytes, px: float, py: float) -> bytes:
             (17.3, 21.6), (13.7, 23.1), (9.0, 12.0), (12.7, 10.5),
         ), fill=(255, 255, 255, 255))
 
-        # Layer 3 — black tail shaft (rotated rect from SVG)
-        # Original rect x=12.5 y=13.6 w=2 h=8, transform=matrix(0.9221 -0.3871 0.3871 0.9221 -5.7605 6.5909)
-        # Corners pre-computed: apply SVG matrix then convert to screen coords.
+        # Layer 3 — black tail shaft
         d.polygon(poly(
             (11.030, 14.293), (12.874, 13.519), (15.971, 20.895), (14.127, 21.669),
         ), fill=(0, 0, 0, 255))
 
-        # Layer 4 — black arrow body (drawn on top, white peeks out as stroke)
+        # Layer 4 — black arrow body
         d.polygon(poly(
             (9.2, 7.3), (9.2, 18.5), (12.2, 15.6), (12.6, 15.5), (17.4, 15.5),
         ), fill=(0, 0, 0, 255))
@@ -80,15 +72,11 @@ def _draw_cursor_on_frame(jpeg_bytes: bytes, px: float, py: float) -> bytes:
 def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps: int = 6):
     """Record the page as an mp4 via CDP screencast.
 
-    Yields the Path of the mp4 being written. If setup fails (e.g. the page
-    already crashed), still yields the path so callers can rely on the contract,
-    but no frames are captured.
+    Yields the Path of the mp4 being written.
 
-    NB: @contextmanager REQUIRES exactly one yield in this function — never put
-    yield inside a try/except that could yield twice. That triggers Python's
-    "generator didn't stop after throw()" RuntimeError when an exception fires
-    inside the with-block. (Previous version had two yields and was the source
-    of session_crash errors observed 2026-05-30/31.)
+    The sender thread runs at `fps` Hz, sampling the latest CDP JPEG and the
+    current cursor position (_last_mouse_pos from lib.browse) each tick.
+    This makes cursor movement visible even when Chrome doesn't repaint.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -96,27 +84,61 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     output_path = output_dir / f"{stamp}_{sid}.mp4"
 
-    ffmpeg = None
-    cdp = None
-    started = False
-    frames_received = [0]
-
-    # Viewport size for cursor coordinate scaling (CSS px → frame px).
-    # Assumed device pixel ratio = 1 for desktop Multilogin profiles.
     try:
-        vp = page.viewport_size() or {}
+        vp = page.viewport_size or {}
     except Exception:
         vp = {}
     _vp_w = float(vp.get("width", 1280))
     _vp_h = float(vp.get("height", 720))
-    # Scale from viewport CSS pixels to frame pixels (maxWidth=1280, maxHeight=720).
     _cursor_scale = min(1280.0 / _vp_w, 720.0 / _vp_h, 1.0)
 
-    # ── setup (best-effort, never propagates) ─────────────────────────────
+    ffmpeg = None
+    cdp = None
+    started = False
+    frames_sent = [0]
+
+    # Shared state between CDP callback and sender thread (GIL protects assignments)
+    latest_jpeg: list[Optional[bytes]] = [None]
+    running = threading.Event()
+
+    def _sender_loop():
+        interval = 1.0 / fps
+        while running.is_set():
+            t0 = time.time()
+            jpeg = latest_jpeg[0]
+            if (jpeg is not None
+                    and ffmpeg is not None
+                    and ffmpeg.poll() is None
+                    and ffmpeg.stdin
+                    and not ffmpeg.stdin.closed):
+                try:
+                    from lib.browse import get_cursor_pos
+                    pos = get_cursor_pos()
+                    if pos is None:
+                        pos = (_vp_w / 2, _vp_h / 2)
+                    frame = _draw_cursor_on_frame(
+                        jpeg,
+                        pos[0] * _cursor_scale,
+                        pos[1] * _cursor_scale,
+                    )
+                except Exception:
+                    frame = jpeg
+                try:
+                    ffmpeg.stdin.write(frame)
+                    frames_sent[0] += 1
+                except (BrokenPipeError, OSError):
+                    break
+            elapsed = time.time() - t0
+            remaining = interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+
+    sender_thread = threading.Thread(target=_sender_loop, daemon=True, name="recording-sender")
+
+    # ── setup ─────────────────────────────────────────────────────────────────
     try:
         ffmpeg = subprocess.Popen([
-            "ffmpeg",
-            "-y",
+            "ffmpeg", "-y",
             "-f", "image2pipe",
             "-vcodec", "mjpeg",
             "-r", str(fps),
@@ -133,46 +155,38 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
 
         def on_frame(event):
             try:
-                frame_bytes = base64.b64decode(event["data"])
-                # Overlay the cursor position tracked by lib.browse mouse helpers.
-                try:
-                    from lib.browse import get_cursor_pos
-                    pos = get_cursor_pos()
-                    if pos is None:
-                        pos = (_vp_w / 2, _vp_h / 2)
-                    frame_bytes = _draw_cursor_on_frame(
-                        frame_bytes,
-                        pos[0] * _cursor_scale,
-                        pos[1] * _cursor_scale,
-                    )
-                except Exception:
-                    pass
-                if ffmpeg.poll() is None and ffmpeg.stdin and not ffmpeg.stdin.closed:
-                    ffmpeg.stdin.write(frame_bytes)
-                    frames_received[0] += 1
-                cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
-            except BrokenPipeError:
+                latest_jpeg[0] = base64.b64decode(event["data"])
+            except Exception:
                 pass
+            try:
+                cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
             except Exception:
                 pass
 
         cdp.on("Page.screencastFrame", on_frame)
 
+        # everyNthFrame=1 → capture every Chrome render; the sender thread
+        # controls output fps independently so we don't flood ffmpeg.
         cdp.send("Page.startScreencast", {
             "format": "jpeg",
             "quality": 60,
             "maxWidth": 1280,
             "maxHeight": 720,
-            "everyNthFrame": max(1, 30 // fps),
+            "everyNthFrame": 1,
         })
+
+        running.set()
+        sender_thread.start()
         started = True
         print(f"[recording] started → {output_path}", file=sys.stderr)
+
     except Exception as e:
         print(f"[recording] setup failed: {type(e).__name__}: {e}", file=sys.stderr)
-        # Clean up any partial ffmpeg now so the teardown phase has nothing to do.
+        running.clear()
         if ffmpeg is not None:
             try:
-                if ffmpeg.stdin: ffmpeg.stdin.close()
+                if ffmpeg.stdin:
+                    ffmpeg.stdin.close()
             except Exception:
                 pass
             try:
@@ -181,12 +195,16 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
                 pass
             ffmpeg = None
         cdp = None
-        # started stays False — teardown will skip
 
-    # ── single yield — exactly once, no matter what setup did ─────────────
+    # ── yield ─────────────────────────────────────────────────────────────────
     try:
         yield output_path
     finally:
+        # Stop the sender thread first so it can't write after ffmpeg closes
+        running.clear()
+        if sender_thread.is_alive():
+            sender_thread.join(timeout=3)
+
         if started and cdp is not None:
             try:
                 cdp.send("Page.stopScreencast")
@@ -196,6 +214,7 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
                 cdp.detach()
             except Exception:
                 pass
+
         if ffmpeg is not None:
             try:
                 if ffmpeg.stdin:
@@ -208,9 +227,10 @@ def record_session(page, output_dir: Path, session_id: Optional[str] = None, fps
                     pass
             except Exception:
                 pass
+
         if started:
             print(
                 f"[recording] stopped → {output_path} "
-                f"(frames={frames_received[0]}, size={output_path.stat().st_size if output_path.exists() else 0} bytes)",
+                f"(frames={frames_sent[0]}, size={output_path.stat().st_size if output_path.exists() else 0} bytes)",
                 file=sys.stderr,
             )
