@@ -1,13 +1,11 @@
 """Full middle-layer integration test (no claude, no autonomous reasoning).
 
-Drives: Multilogin signin → start profile → Playwright over CDP → CreepJS
-→ Reddit front page (just navigate, no actions) → SQLite logging → clean
-shutdown.
+Drives: Multilogin signin → start profile → Playwright over CDP → Reddit
+front page (just navigate, no actions) → SQLite logging → clean shutdown.
 
 What this proves:
   - Multilogin facade works end-to-end on this machine
   - Playwright connects to the launched profile
-  - CreepJS verification extracts real numbers
   - Reddit loads inside the anti-detect browser
   - lib/db.py writes succeed
   - Profile stops cleanly via the API (no cookie corruption)
@@ -33,7 +31,6 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from lib import db
-from lib.creepjs import CREEPJS_URL, verify
 from lib.multilogin import session
 
 
@@ -86,27 +83,8 @@ def main():
             ctx = browser.contexts[0]
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
-            # --- CreepJS verification (optional) ---
-            if config["stealth_verification"].get("enabled", True):
-                print(f"   navigating to CreepJS...")
-                verdict = verify(
-                    page,
-                    min_trust_score=config["stealth_verification"]["min_trust_score"],
-                    max_lies=config["stealth_verification"]["max_lies"],
-                )
-                print(f"   CreepJS: {verdict.summary}")
-                screenshot_path = account_dir / "screenshots" / f"creepjs_{session_id[:8]}.png"
-                screenshot_path.parent.mkdir(exist_ok=True)
-                page.screenshot(path=str(screenshot_path), full_page=True)
-                print(f"   screenshot: {screenshot_path}")
-                db.insert(
-                    state_db, type="Action",
-                    status="done" if verdict.passed else "failed",
-                    action_type="stealth_verified", profile_id=pid,
-                    session_id=session_id, result=verdict.summary,
-                )
-            else:
-                print(f"   skipping CreepJS (disabled in config)")
+            # (CreepJS stealth check retired 2026-06-16 — stealth relies on
+            # Multilogin + proxy, not in-band CreepJS. See AGENT_PROMPT.)
 
             # --- Reddit front page (navigate only, no actions) ---
             print(f"   navigating to reddit.com...")
@@ -136,7 +114,7 @@ def main():
         state_db, type="Session", status="done", day=0,
         action_type="integration_test", session_id=session_id,
         result="phase2 ok",
-        reasoning="Full middle layer verified: multilogin+playwright+creepjs+reddit+sqlite",
+        reasoning="Full middle layer verified: multilogin+playwright+reddit+sqlite",
     )
 
     # --- Summary ---
