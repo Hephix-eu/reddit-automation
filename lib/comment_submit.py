@@ -1,7 +1,7 @@
 """Chokepoint for ALL Reddit comment submission from the warmup agent.
 
-Everything that wants to post a comment - the autonomous warmup session, the
-manual `scripts/oauth_comment.py --submit`, anything else we add later -
+Everything that wants to post a comment - the autonomous warmup session,
+the manual `scripts/test_comment_submit.py`, anything else we add later -
 MUST go through `submit_comment` here. That gives us a single place to:
 
   1. Run mechanical quality checks (lib.comment_quality.check_all) -
@@ -279,7 +279,7 @@ def submit_comment(
          - On any failure path: insert Action status='failed' with the
            verify_status as reasoning, return False.
 
-    The caller (autonomous agent or oauth_comment.py --submit) must have
+    The caller (autonomous agent or scripts/test_comment_submit.py) must have
     a live Playwright `page` already logged into reddit.com via the
     Multilogin browser. We don't open or close that session.
     """

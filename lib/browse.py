@@ -203,7 +203,7 @@ def dwell(seconds_min: float = 0.4, seconds_max: float = 1.5,
 # ~4% sub-70ms rollover bursts. Sampled via inverse-CDF so generated typing
 # matches human rhythm rather than a constant delay — the #1 tell of scripted
 # input. Validated end-to-end against a live Lexical editor through Multilogin
-# (scripts/spike_lexical_typing.py): replay median 164 / p90 302 vs 134 / 293.
+# (scripts/.archive/spike_lexical_typing.py): replay median 164 / p90 302 vs 134 / 293.
 _FLIGHT_CDF: list[tuple[float, float]] = [
     (0.00, 40), (0.05, 72), (0.10, 84), (0.25, 103), (0.50, 134),
     (0.75, 182), (0.90, 293), (0.95, 384), (0.99, 543), (1.00, 1211),
