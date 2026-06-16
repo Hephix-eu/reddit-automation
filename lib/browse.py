@@ -180,13 +180,35 @@ def click_element(page, locator, *,
                   button: str = "left") -> None:
     """Move to a Playwright locator's center humanly, then click.
 
-    Falls back to locator.click() when bounding_box() returns None (element
-    is off-screen or inside a closed shadow root where geometry isn't exposed).
-    Use this for every deliberate UI click — upvotes, saves, subscribes, post
-    links, login buttons, submit — instead of bare locator.click().
+    If the element exists but is scrolled out of the viewport, scrolls it
+    into view first so the subsequent human_mouse_move is visible on screen.
+    Falls back to locator.click() only when the element truly has no geometry
+    (e.g. display:none or inside a closed shadow root).
     """
     import sys as _sys
+
     box = locator.bounding_box()
+
+    # Scroll into view if the element is off-screen (box outside viewport) or
+    # not yet rendered (box is None — some elements only get a layout box after
+    # being scrolled into the render viewport).
+    try:
+        vp = page.viewport_size or {"width": 1280, "height": 720}
+        vp_w, vp_h = vp["width"], vp["height"]
+        off_screen = (
+            box is None
+            or box["x"] + box["width"]  < 0
+            or box["y"] + box["height"] < 0
+            or box["x"] > vp_w
+            or box["y"] > vp_h
+        )
+        if off_screen:
+            locator.scroll_into_view_if_needed(timeout=3_000)
+            time.sleep(0.25)
+            box = locator.bounding_box()
+    except Exception:
+        pass
+
     if box:
         human_click(
             page,
@@ -196,7 +218,7 @@ def click_element(page, locator, *,
             button=button,
         )
     else:
-        print(f"[click_element] WARNING: bounding_box() returned None — falling back to locator.click() (no mouse movement)", file=_sys.stderr)
+        print("[click_element] WARNING: bounding_box() is None after scroll_into_view — falling back to locator.click()", file=_sys.stderr)
         locator.click()
 
 
