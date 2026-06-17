@@ -38,9 +38,17 @@ You are invoked headlessly via Claude Code with `--account=<username>` so you kn
    - Reschedule self for now + 6 hours.
    - Release lock, exit 0.
 4. **Load config + .env.** If `multilogin.profile_id` or `folder_id` starts with `TODO_` or is null → abort, write `Type=Error` row.
-5. **Determine current day.**
-   - If `config.plan.start_date` is null → this is first run. Set `start_date = today` (in `Europe/Riga`), persist to `config.json`, write `Type=StateSnapshot, Action_Type=first_run` to the DB. Today = Day 1.
-   - Else: `Day = floor((today - start_date).days) + 1`. If Day > `config.plan.duration_days` (default 14 if absent), write `Type=StateSnapshot, Reasoning=warmup complete` and DO NOT reschedule. Exit 0.
+5. **Determine current day** — count *warmup days actually run*, NOT calendar days. Dormant gaps (account idle for days/weeks) must **not** advance the plan or auto-complete it. Read the most recent `Type=Session` row:
+   ```
+   db.latest_session(state_db)   # → previous day, session_id, executed_at
+   # or: SELECT day, executed_at FROM actions_log WHERE type='Session' ORDER BY executed_at DESC LIMIT 1
+   ```
+   - **No prior Session row** → first run: `Day = 1`. Also set `config.plan.start_date = today` (`Europe/Riga`) if null and write `Type=StateSnapshot, Action_Type=first_run` (start_date is now informational only — it is NOT used to compute Day).
+   - **Prior Session row exists** (`prev_day`, `prev_executed_at`):
+     - If `prev_executed_at`'s date (`Europe/Riga`) **== today's date** → another session on the *same* warmup day: `Day = prev_day` (do not advance).
+     - Else → `Day = prev_day + 1` (the next warmup day — regardless of how many calendar days have elapsed since the last session).
+   - If `Day > config.plan.duration_days` (default 14 if absent) → write `Type=StateSnapshot, Reasoning="Warmup complete (Day N of D)"` and DO NOT reschedule. Exit 0.
+   - This matches the session-day truth the dashboard shows (`max(Session.day)`). A 6-day-dormant account resuming runs `Day = prev_day + 1` (e.g. 6), never an inflated calendar day.
 6. **Verify active hours window.** If now is outside `session.active_hour_start..active_hour_end` in `session.timezone`:
    - Reschedule for next occurrence of `active_hour_start` + jitter, write `Type=Action, Action_Type=outside_active_hours` row, exit 0.
 7. **Read plan section for current Day.** Parse `accounts/<username>/plan.md` — find `### Day N` heading, extract checklist items (these are your targets for this session).
